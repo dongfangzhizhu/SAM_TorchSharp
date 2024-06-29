@@ -1,0 +1,224 @@
+# .NET Core 构建输出
+bin/
+obj/
+
+# Visual Studio 文件
+.vs/
+*.user
+*.userosscache
+*.sln.docstates
+
+# Visual Studio Code 文件
+.vscode/
+
+# Rider 文件
+.idea/
+
+# 用户特定文件
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# 构建结果
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+build/
+bld/
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+msbuild.log
+msbuild.err
+msbuild.wrn
+
+# Visual Studio 2015/2017 缓存/选项目录
+.vs/
+
+# Visual Studio 2017 自动生成的文件
+Generated\ Files/
+
+# MSTest 测试结果
+[Tt]est[Rr]esult*/
+[Bb]uild[Ll]og.*
+
+# NUNIT
+*.VisualState.xml
+TestResult.xml
+
+# 构建结果
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+
+# NuGet 包
+*.nupkg
+# NuGet Symbol 包
+*.snupkg
+# 包文件夹可以被忽略，因为我们使用 NuGet restore
+**/[Pp]ackages/*
+# 除了构建包含的 build/, 它被用作 MSBuild 目标
+!**/[Pp]ackages/build/
+# 如果使用 Package Restore，取消注释下一行
+#!**/[Pp]ackages/repositories.config
+# NuGet v3's project.json 文件产生更多可忽略的文件
+*.nuget.props
+*.nuget.targets
+
+# Microsoft Azure 构建输出
+csx/
+*.build.csdef
+
+# Microsoft Azure Emulator
+ecf/
+rcf/
+
+# Windows Store app 包目录和文件
+AppPackages/
+BundleArtifacts/
+Package.StoreAssociation.xml
+_pkginfo.txt
+*.appx
+*.appxbundle
+*.appxupload
+
+# Visual Studio 缓存文件
+# 文件以 .cache 结尾并且在 cache 文件夹中
+*.[Cc]ache
+# 但是保留目录 /[Cc]ache/
+!?*.[Cc]ache/
+
+# 其他
+*.Log
+*.tmp
+*.tmp_proj
+*.log
+*.vspscc
+*.vssscc
+.builds
+*.pidb
+*.svclog
+*.scc
+
+# SQL Server 文件
+*.mdf
+*.ldf
+*.ndf
+
+# 业务智能项目
+*.rdl.data
+*.bim.layout
+*.bim_*.settings
+*.rptproj.rsuser
+*- [Bb]ackup.rdl
+*- [Bb]ackup ([0-9]).rdl
+*- [Bb]ackup ([0-9][0-9]).rdl
+
+# Microsoft Fakes
+FakesAssemblies/
+
+# GhostDoc 插件设置文件
+*.GhostDoc.xml
+
+# Visual Studio 6 构建日志
+*.plg
+
+# Visual Studio 6 工作区选项文件
+*.opt
+
+# Visual Studio 6 auto-generated workspace file (contains which files were open etc.)
+*.vbw
+
+# Visual Studio LightSwitch 构建输出
+**/*.HTMLClient/GeneratedArtifacts
+**/*.DesktopClient/GeneratedArtifacts
+**/*.DesktopClient/ModelManifest.xml
+**/*.Server/GeneratedArtifacts
+**/*.Server/ModelManifest.xml
+_Pvt_Extensions
+
+# Paket 依赖管理器
+.paket/paket.exe
+paket-files/
+
+# FAKE - F# Make
+.fake/
+
+# JetBrains Rider
+.idea/
+*.sln.iml
+
+# CodeRush 个人设置
+.cr/personal
+
+# Python Tools for Visual Studio (PTVS)
+__pycache__/
+*.pyc
+
+# Cake - 取消注释如果你使用它
+# tools/**
+# !tools/packages.config
+
+# Tabs Studio
+*.tss
+
+# Telerik's JustMock 配置文件
+*.jmconfig
+
+# BizTalk 构建输出
+*.btp.cs
+*.btm.cs
+*.odx.cs
+*.xsd.cs
+
+# OpenCover UI 分析结果
+OpenCover/
+
+# Azure Stream Analytics 本地运行输出
+ASALocalRun/
+
+# MSBuild Binary and Structured Log
+*.binlog
+
+# NVidia Nsight GPU 调试器配置文件
+*.nvuser
+
+# MFractors (Xamarin productivity tool) 工作文件
+.mfractor/
+
+# 本地历史文件
+.localhistory/
+
+# BeatPulse healthcheck 临时数据库
+healthchecksdb
+
+# Backup 文件夹
+Backup*/
+
+# SQL Server 文件
+*.mdf
+*.ldf
+
+# 业务智能项目
+*.rdl.data
+*.bim.layout
+*.bim_*.settings
+
+# Microsoft Fakes
+FakesAssemblies/
+
+# 环境文件
+.env

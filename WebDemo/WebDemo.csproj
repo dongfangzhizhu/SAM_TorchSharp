@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="TorchVision" Version="0.102.6" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SAMTorchSharp\SAMTorchSharp.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="weights\mobile_sam.pt">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>
