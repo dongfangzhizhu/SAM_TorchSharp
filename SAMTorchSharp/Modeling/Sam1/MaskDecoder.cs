@@ -3,7 +3,7 @@ using TorchSharp.Modules;
 using static TorchSharp.torch;
 using static TorchSharp.torch.nn;
 
-namespace SAMTorchSharp.Modeling
+namespace SAMTorchSharp.Modeling.Sam1
 {
 
     public class MaskDecoder : Module<Tensor, Tensor, Tensor, Tensor,bool, (Tensor, Tensor)>

@@ -1,6 +1,6 @@
-﻿using SAMTorchSharp.Modeling;
-using SAMTorchSharp.Modeling.TinyVitSam;
-using SAMTorchSharp.Modeling.Transformer;
+﻿using SAMTorchSharp.Modeling.Sam1;
+using SAMTorchSharp.Modeling.Sam1.TinyVitSam;
+using SAMTorchSharp.Modeling.Sam1.Transformer;
 using TorchSharp;
 using TorchSharp.PyBridge;
 

@@ -1,7 +1,7 @@
 ﻿using TorchSharp;
 using static TorchSharp.torch;
 using static TorchSharp.torch.nn;
-namespace SAMTorchSharp.Modeling
+namespace SAMTorchSharp.Modeling.Sam1
 {
     public abstract class ImageEncoderViTBase : Module<Tensor, Tensor>
     {

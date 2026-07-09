@@ -2,7 +2,7 @@
 using static TorchSharp.torch;
 using static TorchSharp.torch.nn;
 
-namespace SAMTorchSharp.Modeling.Transformer
+namespace SAMTorchSharp.Modeling.Sam1.Transformer
 {
     /// <summary>
     /// 原代码为Attention，已经检验对比过

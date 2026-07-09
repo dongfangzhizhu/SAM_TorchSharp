@@ -4,7 +4,7 @@ using static TorchSharp.torch;
 using static TorchSharp.torch.nn;
 using static TorchSharp.torch.nn.Activations;
 
-namespace SAMTorchSharp.Modeling
+namespace SAMTorchSharp.Modeling.Sam1
 {
     public static partial class Helper
     {

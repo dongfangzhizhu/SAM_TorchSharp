@@ -2,7 +2,7 @@
 using static TorchSharp.torch;
 using static TorchSharp.torch.nn;
 
-namespace SAMTorchSharp.Modeling
+namespace SAMTorchSharp.Modeling.Sam1
 {
     public class Sam : Module<IList<IDictionary<string, object>>, bool, IList<IDictionary<string, Tensor>>>
     {

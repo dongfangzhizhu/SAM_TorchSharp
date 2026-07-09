@@ -1,4 +1,5 @@
-﻿using SAMTorchSharp.Utils;
+﻿using SAMTorchSharp.Modeling.Sam1;
+using SAMTorchSharp.Utils;
 using System.Diagnostics;
 using TorchSharp;
 using TorchSharp.Modules;
@@ -6,7 +7,7 @@ using static TorchSharp.torch;
 using static TorchSharp.torch.nn;
 using static TorchSharp.torch.nn.Activations;
 
-namespace SAMTorchSharp.Modeling.TinyVitSam
+namespace SAMTorchSharp.Modeling.Sam1.TinyVitSam
 {
     public class Conv2dBN : Module<Tensor, Tensor>
     {

@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>SafetensorsCompare</RootNamespace>
+    <AssemblyName>SafetensorsCompare</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="libtorch-cpu-win-x64" Version="2.2.1.1" />
+    <PackageReference Include="TorchSharp" Version="0.102.6" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\TorchSharp.PyBridge\TorchSharp.PyBridge.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,4 +1,4 @@
-﻿using SAMTorchSharp.Modeling;
+﻿using SAMTorchSharp.Modeling.Sam1;
 using SAMTorchSharp.Utils;
 using static TorchSharp.torch;
 
