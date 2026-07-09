@@ -51,6 +51,10 @@ namespace Sam2VectorRunner
                         return RunSam2Image(dir, int.Parse(opts.GetValueOrDefault("image-size", "256")));
                     case "sam2_real":
                         return RunSam2Real(dir, opts.GetValueOrDefault("variant", "tiny"));
+                    case "rope_attention":
+                        return RunRopeAttention(dir);
+                    case "memory_encoder":
+                        return RunMemoryEncoder(dir);
                     default:
                         Console.Error.WriteLine($"[错误] 未知模块: {module}");
                         PrintUsage();
@@ -505,6 +509,80 @@ namespace Sam2VectorRunner
             {
                 Console.WriteLine($"  {kv.Key}: {string.Join('x', kv.Value.shape)}");
             }
+            Console.WriteLine($"已保存: {outputPath}");
+
+            return 0;
+        }
+
+        private static int RunRopeAttention(string rootDir)
+        {
+            using var _ = NewDisposeScope();
+            using var noGrad = no_grad();
+
+            // self_attn 用例
+            {
+                string caseDir = Path.Combine(rootDir, "self_attn");
+                var model = new RoPEAttention(
+                    embeddingDim: 256, numHeads: 1, downsampleRate: 1,
+                    ropeTheta: 10000.0, featSizes: (64, 64));
+                model.eval();
+                model.load_safetensors(Path.Combine(caseDir, "weights.safetensors"));
+
+                var inputs = Safetensors.LoadStateDict(Path.Combine(caseDir, "input.safetensors"));
+                Tensor outT = model.forward(inputs["q"], inputs["k"], inputs["v"], 0);
+
+                Safetensors.SaveStateDict(Path.Combine(caseDir, "output_net.safetensors"),
+                    new Dictionary<string, Tensor> { ["output"] = outT.contiguous() });
+                Console.WriteLine($"[rope:self_attn] out={string.Join('x', outT.shape)}");
+            }
+
+            // cross_attn 用例
+            {
+                string caseDir = Path.Combine(rootDir, "cross_attn");
+                var model = new RoPEAttention(
+                    embeddingDim: 256, numHeads: 1, downsampleRate: 1,
+                    ropeTheta: 10000.0, featSizes: (64, 64),
+                    ropeKRepeat: true, kvInDim: 64);
+                model.eval();
+                model.load_safetensors(Path.Combine(caseDir, "weights.safetensors"));
+
+                var inputs = Safetensors.LoadStateDict(Path.Combine(caseDir, "input.safetensors"));
+                Tensor outT = model.forward(inputs["q"], inputs["k"], inputs["v"], 4);
+
+                Safetensors.SaveStateDict(Path.Combine(caseDir, "output_net.safetensors"),
+                    new Dictionary<string, Tensor> { ["output"] = outT.contiguous() });
+                Console.WriteLine($"[rope:cross_attn] out={string.Join('x', outT.shape)}");
+            }
+
+            return 0;
+        }
+
+        private static int RunMemoryEncoder(string dir)
+        {
+            using var _ = NewDisposeScope();
+            using var noGrad = no_grad();
+
+            var maskDownsampler = new MaskDownSampler(kernelSize: 3, stride: 2, padding: 1);
+            var fuser = new Fuser(
+                layer: new CXBlock(dim: 256, kernelSize: 7, padding: 3, layerScaleInitValue: 1e-6, useDwconv: true),
+                numLayers: 2);
+            var positionEncoding = new PositionEmbeddingSine(numPosFeats: 64, normalize: true);
+            var model = new MemoryEncoder(outDim: 64, maskDownsampler: maskDownsampler, fuser: fuser, positionEncoding: positionEncoding);
+            model.eval();
+            model.load_safetensors(Path.Combine(dir, "weights.safetensors"));
+
+            var inputs = Safetensors.LoadStateDict(Path.Combine(dir, "input.safetensors"));
+            var output = model.forward(inputs["pix_feat"], inputs["masks"], skipMaskSigmoid: false);
+
+            var outDict = new Dictionary<string, Tensor>
+            {
+                ["vision_features"] = output.VisionFeatures.contiguous(),
+                ["vision_pos_enc_0"] = output.VisionPosEnc[0].contiguous(),
+            };
+            string outputPath = Path.Combine(dir, "output_net.safetensors");
+            Safetensors.SaveStateDict(outputPath, outDict);
+
+            Console.WriteLine($"[memory_encoder] vision_features={string.Join('x', output.VisionFeatures.shape)}");
             Console.WriteLine($"已保存: {outputPath}");
 
             return 0;

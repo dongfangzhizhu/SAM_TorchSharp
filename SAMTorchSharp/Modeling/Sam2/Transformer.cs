@@ -51,18 +51,32 @@ namespace SAMTorchSharp.Modeling.Sam2
             RegisterComponents();
         }
 
-        private Tensor SeparateHeads(Tensor x, int numHeads)
+        protected double DropoutP => dropoutP;
+
+        protected static Tensor SeparateHeads(Tensor x, int numHeads)
         {
             var (b, n, c) = (x.shape[0], x.shape[1], x.shape[2]);
             x = x.reshape(b, n, numHeads, c / numHeads);
             return x.transpose(1, 2);
         }
 
-        private Tensor RecombineHeads(Tensor x)
+        protected static Tensor RecombineHeads(Tensor x)
         {
             var (b, nHeads, nTokens, cPerHead) = (x.shape[0], x.shape[1], x.shape[2], x.shape[3]);
             x = x.transpose(1, 2);
             return x.reshape(b, nTokens, nHeads * cPerHead);
+        }
+
+        protected static Tensor ScaledDotProductAttention(Tensor q, Tensor k, Tensor v, double dropoutP, bool training)
+        {
+            double scale = 1.0 / Math.Sqrt(q.size(-1));
+            Tensor attn = q.matmul(k.transpose(-2, -1)) * scale;
+            attn = functional.softmax(attn, dim: -1);
+            if (training && dropoutP > 0.0)
+            {
+                attn = functional.dropout(attn, dropoutP);
+            }
+            return attn.matmul(v);
         }
 
         public override Tensor forward(Tensor q, Tensor k, Tensor v)
@@ -75,19 +89,108 @@ namespace SAMTorchSharp.Modeling.Sam2
             k = SeparateHeads(k, num_heads);
             v = SeparateHeads(v, num_heads);
 
-            double scale = 1.0 / Math.Sqrt(q.size(-1));
-            Tensor attn = q.matmul(k.transpose(-2, -1)) * scale;
-            attn = functional.softmax(attn, dim: -1);
-            if (training && dropoutP > 0.0)
-            {
-                attn = functional.dropout(attn, dropoutP);
-            }
-            Tensor outT = attn.matmul(v);
+            Tensor outT = ScaledDotProductAttention(q, k, v, dropoutP, training);
 
             outT = RecombineHeads(outT);
             outT = out_proj.forward(outT);
             return outT;
         }
+    }
+
+    /// <summary>
+    /// 对应 sam2/modeling/sam/transformer.py: RoPEAttention。
+    /// 在标准 Attention 基础上对 q 和 k（排除末尾 num_k_exclude_rope 个 object pointer token）
+    /// 施加 2D 轴向旋转位置编码。用于 memory attention 的 self-attn（在视频帧特征网格上）与
+    /// cross-attn（跨帧 attend 到历史 memory）。
+    /// 注意：freqs 缓存 (cos/sin 表) 不是可学习参数，不参与 state_dict，每次构造/尺寸变化时重新计算。
+    /// </summary>
+    public class RoPEAttention : Attention
+    {
+        private readonly double ropeTheta;
+        private readonly bool ropeKRepeat;
+        private long cachedEndX;
+        private long cachedEndY;
+        private Tensor cachedCos;
+        private Tensor cachedSin;
+
+        public RoPEAttention(
+            long embeddingDim,
+            int numHeads,
+            long downsampleRate = 1,
+            double dropout = 0.0,
+            long? kvInDim = null,
+            double ropeTheta = 10000.0,
+            bool ropeKRepeat = false,
+            (long endX, long endY)? featSizes = null,
+            string name = "RoPEAttention")
+            : base(embeddingDim, numHeads, downsampleRate, dropout, kvInDim, name)
+        {
+            this.ropeTheta = ropeTheta;
+            this.ropeKRepeat = ropeKRepeat;
+
+            var (endX, endY) = featSizes ?? (64, 64);
+            RecomputeFreqs(endX, endY);
+        }
+
+        private void RecomputeFreqs(long endX, long endY)
+        {
+            long headDim = internal_dim / num_heads;
+            var (cos, sin) = RotaryPositionEncoding.ComputeAxialFreqs(headDim, endX, endY, ropeTheta);
+            cachedCos = cos;
+            cachedSin = sin;
+            cachedEndX = endX;
+            cachedEndY = endY;
+        }
+
+        /// <summary>
+        /// 对应 Python 端 forward(q,k,v,num_k_exclude_rope)。
+        /// </summary>
+        public Tensor forward(Tensor q, Tensor k, Tensor v, long numKExcludeRope)
+        {
+            q = q_proj.forward(q);
+            k = k_proj.forward(k);
+            v = v_proj.forward(v);
+
+            q = SeparateHeads(q, num_heads);
+            k = SeparateHeads(k, num_heads);
+            v = SeparateHeads(v, num_heads);
+
+            long qLen = q.shape[^2];
+            long side = (long)Math.Round(Math.Sqrt(qLen));
+            if (side * side != cachedEndX * cachedEndY || cachedEndX != side || cachedEndY != side)
+            {
+                RecomputeFreqs(side, side);
+            }
+
+            long numKRope = k.shape[^2] - numKExcludeRope;
+            Tensor kRope = k[TensorIndex.Ellipsis, TensorIndex.Slice(0, numKRope), TensorIndex.Colon];
+            Tensor kRest = numKExcludeRope > 0
+                ? k[TensorIndex.Ellipsis, TensorIndex.Slice(numKRope, null), TensorIndex.Colon]
+                : null!;
+
+            Tensor cos = cachedCos, sin = cachedSin;
+            if (numKRope != qLen)
+            {
+                if (!ropeKRepeat)
+                {
+                    throw new InvalidOperationException("k 与 q 的 token 数不一致时必须设置 rope_k_repeat=true");
+                }
+                long r = numKRope / qLen;
+                (cos, sin) = RotaryPositionEncoding.RepeatAlongTokenDim(cachedCos, cachedSin, r);
+            }
+
+            Tensor qRot = RotaryPositionEncoding.ApplyRotary(q, cachedCos, cachedSin);
+            Tensor kRopeRot = RotaryPositionEncoding.ApplyRotary(kRope, cos, sin);
+            Tensor kFinal = numKExcludeRope > 0 ? cat(new[] { kRopeRot, kRest }, dim: -2) : kRopeRot;
+
+            Tensor outT = ScaledDotProductAttention(qRot, kFinal, v, DropoutP, training);
+            outT = RecombineHeads(outT);
+            outT = out_proj.forward(outT);
+            return outT;
+        }
+
+        /// <summary>标准 3 参数 forward（num_k_exclude_rope=0）。</summary>
+        public override Tensor forward(Tensor q, Tensor k, Tensor v) => forward(q, k, v, 0);
     }
 
     /// <summary>
