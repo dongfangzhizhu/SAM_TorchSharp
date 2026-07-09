@@ -55,6 +55,8 @@ namespace Sam2VectorRunner
                         return RunRopeAttention(dir);
                     case "memory_encoder":
                         return RunMemoryEncoder(dir);
+                    case "memory_attention":
+                        return RunMemoryAttention(dir);
                     default:
                         Console.Error.WriteLine($"[错误] 未知模块: {module}");
                         PrintUsage();
@@ -583,6 +585,35 @@ namespace Sam2VectorRunner
             Safetensors.SaveStateDict(outputPath, outDict);
 
             Console.WriteLine($"[memory_encoder] vision_features={string.Join('x', output.VisionFeatures.shape)}");
+            Console.WriteLine($"已保存: {outputPath}");
+
+            return 0;
+        }
+
+        private static int RunMemoryAttention(string dir)
+        {
+            using var _ = NewDisposeScope();
+            using var noGrad = no_grad();
+
+            var selfAttn = new RoPEAttention(embeddingDim: 256, numHeads: 1, downsampleRate: 1, ropeTheta: 10000.0, featSizes: (64, 64));
+            var crossAttn = new RoPEAttention(
+                embeddingDim: 256, numHeads: 1, downsampleRate: 1, ropeTheta: 10000.0,
+                featSizes: (64, 64), ropeKRepeat: true, kvInDim: 64);
+            var layer = new MemoryAttentionLayer(
+                activation: "relu", crossAttention: crossAttn, dModel: 256, dimFeedforward: 2048, dropout: 0.1,
+                posEncAtAttn: false, posEncAtCrossAttnKeys: true, posEncAtCrossAttnQueries: false, selfAttention: selfAttn);
+            var model = new MemoryAttention(dModel: 256, posEncAtInput: true, layer: layer, numLayers: 4);
+            model.eval();
+            model.load_safetensors(Path.Combine(dir, "weights.safetensors"));
+
+            var inputs = Safetensors.LoadStateDict(Path.Combine(dir, "input.safetensors"));
+            Tensor outT = model.forward(
+                inputs["curr"], inputs["memory"], inputs["curr_pos"], inputs["memory_pos"], numObjPtrTokens: 4);
+
+            string outputPath = Path.Combine(dir, "output_net.safetensors");
+            Safetensors.SaveStateDict(outputPath, new Dictionary<string, Tensor> { ["output"] = outT.contiguous() });
+
+            Console.WriteLine($"[memory_attention] output={string.Join('x', outT.shape)}");
             Console.WriteLine($"已保存: {outputPath}");
 
             return 0;
