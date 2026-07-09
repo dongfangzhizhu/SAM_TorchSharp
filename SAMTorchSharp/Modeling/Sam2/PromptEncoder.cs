@@ -21,7 +21,7 @@ namespace SAMTorchSharp.Modeling.Sam2
         private readonly int num_point_embeddings;
         public readonly ModuleList<Embedding> point_embeddings;
         public readonly Embedding not_a_point_embed;
-        private readonly (int, int) mask_input_size;
+        public readonly (int H, int W) mask_input_size;
         public readonly Sequential mask_downscaling;
         public readonly Embedding no_mask_embed;
 

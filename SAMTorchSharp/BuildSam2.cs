@@ -5,11 +5,9 @@ using TorchSharp.PyBridge;
 namespace SAMTorchSharp
 {
     /// <summary>
-    /// SAM2 图片推理管线的构建器，对应 Python 端 sam2/build_sam.py 中 build_sam2 + sam2.1_hiera_*.yaml 配置。
-    /// 注意：当前仅实现图片推理所需的子集（image_encoder + sam_prompt_encoder + sam_mask_decoder），
-    /// 不包含 memory_attention/memory_encoder（视频推理相关，留给 Phase2）。
-    /// 因此从官方完整 checkpoint 加载权重时，需要使用非严格模式（strict=false），
-    /// memory_attention.*/memory_encoder.* 等 key 会被跳过，仅加载图片推理用到的权重。
+    /// SAM2 完整推理管线（图片 + 视频）的构建器，对应 Python 端 sam2/build_sam.py 中
+    /// build_sam2 + sam2.1_hiera_*.yaml 配置。包含 image_encoder、sam_prompt_encoder、
+    /// sam_mask_decoder、memory_attention、memory_encoder，可直接从官方完整 checkpoint 严格加载权重。
     /// </summary>
     public static class BuildSam2
     {
@@ -93,6 +91,7 @@ namespace SAMTorchSharp
             string? checkpoint)
         {
             const long dModel = 256;
+            const long memDim = 64;
 
             var trunk = new Hiera(
                 embedDim: embedDim,
@@ -133,27 +132,63 @@ namespace SAMTorchSharp
                 predObjScoresMlp: true,
                 useMultimaskTokenForObjPtr: true);
 
+            // memory_attention: 4 层，self_attn/cross_attn_image 均为 RoPEAttention
+            // (cross_attn_image 的 kv_in_dim=mem_dim=64，对应 memory_encoder.out_dim)
+            var selfAttn = new RoPEAttention(embeddingDim: dModel, numHeads: 1, downsampleRate: 1, ropeTheta: 10000.0, featSizes: (64, 64));
+            var crossAttn = new RoPEAttention(
+                embeddingDim: dModel, numHeads: 1, downsampleRate: 1, ropeTheta: 10000.0,
+                featSizes: (64, 64), ropeKRepeat: true, kvInDim: memDim);
+            var memAttnLayer = new MemoryAttentionLayer(
+                activation: "relu", crossAttention: crossAttn, dModel: dModel, dimFeedforward: 2048, dropout: 0.1,
+                posEncAtAttn: false, posEncAtCrossAttnKeys: true, posEncAtCrossAttnQueries: false, selfAttention: selfAttn);
+            var memoryAttention = new MemoryAttention(dModel: dModel, posEncAtInput: true, layer: memAttnLayer, numLayers: 4);
+
+            // memory_encoder: mask_downsampler(stride16=4层) + fuser(2层CXBlock) + out_proj(256->64)
+            var maskDownsampler = new MaskDownSampler(kernelSize: 3, stride: 2, padding: 1);
+            var fuser = new Fuser(
+                layer: new CXBlock(dim: dModel, kernelSize: 7, padding: 3, layerScaleInitValue: 1e-6, useDwconv: true),
+                numLayers: 2);
+            var memPositionEncoding = new PositionEmbeddingSine(numPosFeats: memDim, normalize: true);
+            var memoryEncoder = new MemoryEncoder(outDim: memDim, maskDownsampler: maskDownsampler, fuser: fuser, positionEncoding: memPositionEncoding);
+
             var model = new Sam2Base(
                 imageEncoder,
                 promptEncoder,
                 maskDecoder,
+                memoryAttention: memoryAttention,
+                memoryEncoder: memoryEncoder,
+                numMaskmem: 7,
                 imageSize: imageSize,
                 backboneStride: 16,
+                sigmoidScaleForMemEnc: 20.0,
+                sigmoidBiasForMemEnc: -10.0,
+                useMaskInputAsOutputWithoutSam: true,
+                directlyAddNoMemEmbed: true,
                 useHighResFeaturesInSam: true,
-                directlyAddNoMemEmbed: true);
+                multimaskOutputInSam: true,
+                multimaskMinPtNum: 0,
+                multimaskMaxPtNum: 1,
+                multimaskOutputForTracking: true,
+                useObjPtrsInEncoder: true,
+                addTposEncToObjPtrs: true,
+                projTposEncInObjPtrs: true,
+                useSignedTposEncToObjPtrs: true,
+                onlyObjPtrsInThePastForEval: true,
+                predObjScores: true,
+                fixedNoObjPtr: true,
+                useMlpForObjPtrProj: true,
+                noObjEmbedSpatial: true);
 
             if (!string.IsNullOrEmpty(checkpoint))
             {
                 string ext = Path.GetExtension(checkpoint);
-                // 官方完整 checkpoint 包含 memory_attention/memory_encoder 等本类未实现的模块权重，
-                // 因此使用非严格模式加载：仅匹配 image_encoder/sam_prompt_encoder/sam_mask_decoder/no_mem_embed。
                 if (ext.Equals(".pth", StringComparison.InvariantCultureIgnoreCase) || ext.Equals(".pt", StringComparison.InvariantCultureIgnoreCase))
                 {
-                    model.load_py(checkpoint, strict: false);
+                    model.load_py(checkpoint, strict: true);
                 }
                 else if (ext.Equals(".safetensors", StringComparison.InvariantCultureIgnoreCase))
                 {
-                    model.load_safetensors(checkpoint, strict: false);
+                    model.load_safetensors(checkpoint, strict: true);
                 }
             }
 

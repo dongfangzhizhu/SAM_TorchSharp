@@ -57,6 +57,8 @@ namespace Sam2VectorRunner
                         return RunMemoryEncoder(dir);
                     case "memory_attention":
                         return RunMemoryAttention(dir);
+                    case "sam2_track_step":
+                        return RunSam2TrackStep(dir, int.Parse(opts.GetValueOrDefault("image-size", "256")));
                     default:
                         Console.Error.WriteLine($"[错误] 未知模块: {module}");
                         PrintUsage();
@@ -321,7 +323,7 @@ namespace Sam2VectorRunner
                 directlyAddNoMemEmbed: true);
             model.eval();
 
-            model.load_safetensors(Path.Combine(dir, "weights.safetensors"));
+            model.load_safetensors(Path.Combine(dir, "weights.safetensors"), strict: false);
 
             var inputs = Safetensors.LoadStateDict(Path.Combine(dir, "input.safetensors"));
             Tensor x = inputs["x"];
@@ -329,7 +331,7 @@ namespace Sam2VectorRunner
             Tensor pointLabels = inputs["point_labels"];
 
             var backboneOut = model.ForwardImage(x);
-            var (visionFeats, featSizes) = model.PrepareBackboneFeatures(backboneOut);
+            var (visionFeats, _, featSizes) = model.PrepareBackboneFeatures(backboneOut);
             visionFeats[^1] = visionFeats[^1] + model.no_mem_embed;
 
             var bbFeatSizes = new (long, long)[]
@@ -444,7 +446,9 @@ namespace Sam2VectorRunner
                 useHighResFeaturesInSam: true, directlyAddNoMemEmbed: true);
             model.eval();
 
-            model.load_safetensors(Path.Combine(dir, "weights.safetensors"));
+            // 该测试向量只保存了图片推理用到的权重子集(image_encoder/sam_prompt_encoder/sam_mask_decoder/no_mem_embed)，
+            // Sam2Base 构造时还会创建 memory_attention/memory_encoder 相关的参数（未使用），故用非严格模式加载。
+            model.load_safetensors(Path.Combine(dir, "weights.safetensors"), strict: false);
 
             var inputs = Safetensors.LoadStateDict(Path.Combine(dir, "input.safetensors"));
             Tensor preprocessed = inputs["preprocessed_image"];
@@ -463,7 +467,7 @@ namespace Sam2VectorRunner
                 pointCoords1024[TensorIndex.Ellipsis, TensorIndex.Single(1)] / origH * imageSize;
 
             var backboneOut = model.ForwardImage(preprocessed);
-            var (visionFeats, _) = model.PrepareBackboneFeatures(backboneOut);
+            var (visionFeats, _, _) = model.PrepareBackboneFeatures(backboneOut);
             visionFeats[^1] = visionFeats[^1] + model.no_mem_embed;
 
             var bbFeatSizes = new (long, long)[] { (256, 256), (128, 128), (64, 64) };
@@ -614,6 +618,119 @@ namespace Sam2VectorRunner
             Safetensors.SaveStateDict(outputPath, new Dictionary<string, Tensor> { ["output"] = outT.contiguous() });
 
             Console.WriteLine($"[memory_attention] output={string.Join('x', outT.shape)}");
+            Console.WriteLine($"已保存: {outputPath}");
+
+            return 0;
+        }
+
+        private static int RunSam2TrackStep(string dir, int imageSize)
+        {
+            using var _ = NewDisposeScope();
+            using var noGrad = no_grad();
+
+            const long dModel = 256;
+            const long memDim = 64;
+
+            Hiera trunk = BuildHiera("tiny");
+            var positionEncoding = new PositionEmbeddingSine(numPosFeats: dModel, normalize: true);
+            var neck = new FpnNeck(
+                positionEncoding: positionEncoding, dModel: dModel, backboneChannelList: trunk.ChannelList,
+                fpnTopDownLevels: new[] { 2, 3 }, fpnInterpModel: "nearest");
+            var imageEncoder = new ImageEncoder(trunk, neck, scalp: 1);
+
+            var promptEncoder = new SAMTorchSharp.Modeling.Sam2.PromptEncoder(
+                embed_dim: (int)dModel,
+                image_embedding_size: (imageSize / 16, imageSize / 16),
+                input_image_size: (imageSize, imageSize),
+                mask_in_chans: 16);
+
+            var transformer = new TwoWayTransformer(depth: 2, embeddingDim: dModel, numHeads: 8, mlpDim: 2048);
+            var maskDecoder = new MaskDecoder(
+                transformerDim: dModel, transformer: transformer, numMultimaskOutputs: 3,
+                iouHeadDepth: 3, iouHeadHiddenDim: 256, useHighResFeatures: true,
+                iouPredictionUseSigmoid: true, dynamicMultimaskViaStability: true,
+                dynamicMultimaskStabilityDelta: 0.05, dynamicMultimaskStabilityThresh: 0.98,
+                predObjScores: true, predObjScoresMlp: true, useMultimaskTokenForObjPtr: true);
+
+            var selfAttn = new RoPEAttention(embeddingDim: dModel, numHeads: 1, downsampleRate: 1, ropeTheta: 10000.0, featSizes: (64, 64));
+            var crossAttn = new RoPEAttention(
+                embeddingDim: dModel, numHeads: 1, downsampleRate: 1, ropeTheta: 10000.0,
+                featSizes: (64, 64), ropeKRepeat: true, kvInDim: memDim);
+            var memAttnLayer = new MemoryAttentionLayer(
+                activation: "relu", crossAttention: crossAttn, dModel: dModel, dimFeedforward: 2048, dropout: 0.1,
+                posEncAtAttn: false, posEncAtCrossAttnKeys: true, posEncAtCrossAttnQueries: false, selfAttention: selfAttn);
+            var memoryAttention = new MemoryAttention(dModel: dModel, posEncAtInput: true, layer: memAttnLayer, numLayers: 4);
+
+            var maskDownsampler = new MaskDownSampler(kernelSize: 3, stride: 2, padding: 1);
+            var fuser = new Fuser(
+                layer: new CXBlock(dim: dModel, kernelSize: 7, padding: 3, layerScaleInitValue: 1e-6, useDwconv: true),
+                numLayers: 2);
+            var memPositionEncoding = new PositionEmbeddingSine(numPosFeats: memDim, normalize: true);
+            var memoryEncoder = new MemoryEncoder(outDim: memDim, maskDownsampler: maskDownsampler, fuser: fuser, positionEncoding: memPositionEncoding);
+
+            var model = new Sam2Base(
+                imageEncoder, promptEncoder, maskDecoder,
+                memoryAttention: memoryAttention, memoryEncoder: memoryEncoder,
+                numMaskmem: 7, imageSize: imageSize, backboneStride: 16,
+                sigmoidScaleForMemEnc: 20.0, sigmoidBiasForMemEnc: -10.0,
+                useMaskInputAsOutputWithoutSam: true, directlyAddNoMemEmbed: true,
+                useHighResFeaturesInSam: true, multimaskOutputInSam: true,
+                multimaskMinPtNum: 0, multimaskMaxPtNum: 1, multimaskOutputForTracking: true,
+                useObjPtrsInEncoder: true, addTposEncToObjPtrs: true, projTposEncInObjPtrs: true,
+                useSignedTposEncToObjPtrs: true, onlyObjPtrsInThePastForEval: true,
+                predObjScores: true, fixedNoObjPtr: true, useMlpForObjPtrProj: true, noObjEmbedSpatial: true);
+            model.eval();
+            model.load_safetensors(Path.Combine(dir, "weights.safetensors"));
+
+            var inputs = Safetensors.LoadStateDict(Path.Combine(dir, "input.safetensors"));
+            Tensor img0 = inputs["img0"], img1 = inputs["img1"];
+            Tensor pointCoords = inputs["point_coords"], pointLabels = inputs["point_labels"];
+
+            var backboneOut0 = model.ForwardImage(img0);
+            var (visionFeats0, visionPos0, featSizes0) = model.PrepareBackboneFeatures(backboneOut0);
+
+            var pointInputs = new PointInputs { PointCoords = pointCoords, PointLabels = pointLabels.to(ScalarType.Int32) };
+            var outputDict = new VideoOutputDict();
+
+            var out0 = model.TrackStep(
+                frameIdx: 0, isInitCondFrame: true,
+                currentVisionFeats: visionFeats0, currentVisionPosEmbeds: visionPos0, featSizes: featSizes0,
+                pointInputs: pointInputs, maskInputs: null, outputDict: outputDict, numFrames: 2,
+                trackInReverse: false, runMemEncoder: true);
+            outputDict.CondFrameOutputs[0] = out0;
+
+            var backboneOut1 = model.ForwardImage(img1);
+            var (visionFeats1, visionPos1, featSizes1) = model.PrepareBackboneFeatures(backboneOut1);
+
+            var out1 = model.TrackStep(
+                frameIdx: 1, isInitCondFrame: false,
+                currentVisionFeats: visionFeats1, currentVisionPosEmbeds: visionPos1, featSizes: featSizes1,
+                pointInputs: null, maskInputs: null, outputDict: outputDict, numFrames: 2,
+                trackInReverse: false, runMemEncoder: true);
+
+            var outDict = new Dictionary<string, Tensor>
+            {
+                ["frame0_pred_masks"] = out0.PredMasks.contiguous(),
+                ["frame0_pred_masks_high_res"] = out0.PredMasksHighRes.contiguous(),
+                ["frame0_obj_ptr"] = out0.ObjPtr.contiguous(),
+                ["frame0_object_score_logits"] = out0.ObjectScoreLogits.contiguous(),
+                ["frame0_maskmem_features"] = out0.MaskmemFeatures!.contiguous(),
+                ["frame0_maskmem_pos_enc_0"] = out0.MaskmemPosEnc![0].contiguous(),
+                ["frame1_pred_masks"] = out1.PredMasks.contiguous(),
+                ["frame1_pred_masks_high_res"] = out1.PredMasksHighRes.contiguous(),
+                ["frame1_obj_ptr"] = out1.ObjPtr.contiguous(),
+                ["frame1_object_score_logits"] = out1.ObjectScoreLogits.contiguous(),
+                ["frame1_maskmem_features"] = out1.MaskmemFeatures!.contiguous(),
+                ["frame1_maskmem_pos_enc_0"] = out1.MaskmemPosEnc![0].contiguous(),
+            };
+            string outputPath = Path.Combine(dir, "output_net.safetensors");
+            Safetensors.SaveStateDict(outputPath, outDict);
+
+            Console.WriteLine("[sam2_track_step] 完成两帧track_step");
+            foreach (var kv in outDict)
+            {
+                Console.WriteLine($"  {kv.Key}: {string.Join('x', kv.Value.shape)}");
+            }
             Console.WriteLine($"已保存: {outputPath}");
 
             return 0;
