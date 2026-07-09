@@ -1,7 +1,9 @@
 using SAMTorchSharp.Modeling.Sam2;
 using TorchSharp;
+using TorchSharp.Modules;
 using TorchSharp.PyBridge;
 using static TorchSharp.torch;
+using static TorchSharp.torch.nn;
 
 namespace Sam2VectorRunner
 {
@@ -38,6 +40,8 @@ namespace Sam2VectorRunner
                 {
                     case "hiera":
                         return RunHiera(dir, opts.GetValueOrDefault("variant", "tiny"));
+                    case "image_encoder":
+                        return RunImageEncoder(dir, opts.GetValueOrDefault("variant", "tiny"), int.Parse(opts.GetValueOrDefault("d-model", "256")));
                     default:
                         Console.Error.WriteLine($"[错误] 未知模块: {module}");
                         PrintUsage();
@@ -56,24 +60,7 @@ namespace Sam2VectorRunner
             using var _ = NewDisposeScope();
             using var noGrad = no_grad();
 
-            Hiera model = variant switch
-            {
-                "tiny" => new Hiera(
-                    embedDim: 96,
-                    numHeads: 1,
-                    stages: new[] { 1, 2, 7, 2 },
-                    globalAttBlocks: new[] { 5, 7, 9 },
-                    windowPosEmbedBkgSpatialSize: (7, 7),
-                    windowSpec: new[] { 8, 4, 14, 7 }),
-                "large" => new Hiera(
-                    embedDim: 144,
-                    numHeads: 2,
-                    stages: new[] { 2, 6, 36, 4 },
-                    globalAttBlocks: new[] { 23, 33, 43 },
-                    windowPosEmbedBkgSpatialSize: (7, 7),
-                    windowSpec: new[] { 8, 4, 16, 8 }),
-                _ => throw new ArgumentException($"未知 variant: {variant}")
-            };
+            Hiera model = BuildHiera(variant);
             model.eval();
 
             string weightsPath = Path.Combine(dir, "weights.safetensors");
@@ -99,6 +86,77 @@ namespace Sam2VectorRunner
             for (int i = 0; i < outputs.Count; i++)
             {
                 Console.WriteLine($"  feat_{i}: {string.Join('x', outputs[i].shape)}");
+            }
+            Console.WriteLine($"已保存: {outputPath}");
+
+            return 0;
+        }
+
+        private static Hiera BuildHiera(string variant)
+        {
+            return variant switch
+            {
+                "tiny" => new Hiera(
+                    embedDim: 96,
+                    numHeads: 1,
+                    stages: new[] { 1, 2, 7, 2 },
+                    globalAttBlocks: new[] { 5, 7, 9 },
+                    windowPosEmbedBkgSpatialSize: (7, 7),
+                    windowSpec: new[] { 8, 4, 14, 7 }),
+                "large" => new Hiera(
+                    embedDim: 144,
+                    numHeads: 2,
+                    stages: new[] { 2, 6, 36, 4 },
+                    globalAttBlocks: new[] { 23, 33, 43 },
+                    windowPosEmbedBkgSpatialSize: (7, 7),
+                    windowSpec: new[] { 8, 4, 16, 8 }),
+                _ => throw new ArgumentException($"未知 variant: {variant}")
+            };
+        }
+
+        private static int RunImageEncoder(string dir, string variant, int dModel)
+        {
+            using var _ = NewDisposeScope();
+            using var noGrad = no_grad();
+
+            Hiera trunk = BuildHiera(variant);
+            var positionEncoding = new PositionEmbeddingSine(numPosFeats: dModel, normalize: true);
+            var neck = new FpnNeck(
+                positionEncoding: positionEncoding,
+                dModel: dModel,
+                backboneChannelList: trunk.ChannelList,
+                fpnTopDownLevels: new[] { 2, 3 },
+                fpnInterpModel: "nearest");
+            var model = new ImageEncoder(trunk, neck, scalp: 1);
+            model.eval();
+
+            string weightsPath = Path.Combine(dir, "weights.safetensors");
+            string inputPath = Path.Combine(dir, "input.safetensors");
+            string outputPath = Path.Combine(dir, "output_net.safetensors");
+
+            model.load_safetensors(weightsPath);
+
+            var inputs = Safetensors.LoadStateDict(inputPath);
+            Tensor x = inputs["x"];
+
+            var output = model.forward(x);
+
+            var outDict = new Dictionary<string, Tensor> { ["vision_features"] = output.VisionFeatures.contiguous() };
+            for (int i = 0; i < output.BackboneFpn.Count; i++)
+            {
+                outDict[$"backbone_fpn_{i}"] = output.BackboneFpn[i].contiguous();
+            }
+            for (int i = 0; i < output.VisionPosEnc.Count; i++)
+            {
+                outDict[$"vision_pos_enc_{i}"] = output.VisionPosEnc[i].contiguous();
+            }
+
+            Safetensors.SaveStateDict(outputPath, outDict);
+
+            Console.WriteLine($"[image_encoder:{variant}] vision_features: {string.Join('x', output.VisionFeatures.shape)}");
+            foreach (var kv in outDict)
+            {
+                Console.WriteLine($"  {kv.Key}: {string.Join('x', kv.Value.shape)}");
             }
             Console.WriteLine($"已保存: {outputPath}");
 
