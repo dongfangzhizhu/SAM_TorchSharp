@@ -222,3 +222,7 @@ FakesAssemblies/
 
 # 环境文件
 .env
+
+# SAM2/SAM3 迁移过程中生成的数值校验测试向量（体积较大，随机权重可重新生成，不入库）
+testdata/
+testdata_tmp/
