@@ -44,6 +44,8 @@ namespace Sam2VectorRunner
                         return RunImageEncoder(dir, opts.GetValueOrDefault("variant", "tiny"), int.Parse(opts.GetValueOrDefault("d-model", "256")));
                     case "prompt_encoder":
                         return RunPromptEncoder(dir);
+                    case "mask_decoder":
+                        return RunMaskDecoder(dir);
                     default:
                         Console.Error.WriteLine($"[错误] 未知模块: {module}");
                         PrintUsage();
@@ -204,6 +206,58 @@ namespace Sam2VectorRunner
                 Safetensors.SaveStateDict(outputPath, outDict);
 
                 Console.WriteLine($"[prompt_encoder:{caseName}] sparse={string.Join('x', sparse.shape)} dense={string.Join('x', dense.shape)}");
+                Console.WriteLine($"  已保存: {outputPath}");
+            }
+
+            return 0;
+        }
+
+        private static int RunMaskDecoder(string rootDir)
+        {
+            using var _ = NewDisposeScope();
+            using var noGrad = no_grad();
+
+            var transformer = new TwoWayTransformer(depth: 2, embeddingDim: 256, numHeads: 8, mlpDim: 2048);
+            var model = new MaskDecoder(
+                transformerDim: 256,
+                transformer: transformer,
+                numMultimaskOutputs: 3,
+                iouHeadDepth: 3,
+                iouHeadHiddenDim: 256,
+                useHighResFeatures: true,
+                iouPredictionUseSigmoid: true,
+                dynamicMultimaskViaStability: true,
+                predObjScores: true,
+                predObjScoresMlp: true,
+                useMultimaskTokenForObjPtr: true);
+            model.eval();
+            model.load_safetensors(Path.Combine(rootDir, "weights.safetensors"));
+
+            foreach (var (caseName, multimaskOutput) in new[] { ("single_mask", false), ("multi_mask", true) })
+            {
+                string caseDir = Path.Combine(rootDir, caseName);
+                var inputs = Safetensors.LoadStateDict(Path.Combine(caseDir, "input.safetensors"));
+
+                var (masks, iouPred, samTokensOut, objectScoreLogits) = model.forward(
+                    inputs["image_embeddings"],
+                    inputs["image_pe"],
+                    inputs["sparse_prompt_embeddings"],
+                    inputs["dense_prompt_embeddings"],
+                    multimaskOutput,
+                    false,
+                    new[] { inputs["feat_s0"], inputs["feat_s1"] });
+
+                var outDict = new Dictionary<string, Tensor>
+                {
+                    ["masks"] = masks.contiguous(),
+                    ["iou_pred"] = iouPred.contiguous(),
+                    ["sam_tokens_out"] = samTokensOut.contiguous(),
+                    ["object_score_logits"] = objectScoreLogits.contiguous(),
+                };
+                string outputPath = Path.Combine(caseDir, "output_net.safetensors");
+                Safetensors.SaveStateDict(outputPath, outDict);
+
+                Console.WriteLine($"[mask_decoder:{caseName}] masks={string.Join('x', masks.shape)} iou_pred={string.Join('x', iouPred.shape)}");
                 Console.WriteLine($"  已保存: {outputPath}");
             }
 
