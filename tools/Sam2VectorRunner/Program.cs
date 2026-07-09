@@ -49,6 +49,8 @@ namespace Sam2VectorRunner
                         return RunMaskDecoder(dir);
                     case "sam2_image":
                         return RunSam2Image(dir, int.Parse(opts.GetValueOrDefault("image-size", "256")));
+                    case "sam2_real":
+                        return RunSam2Real(dir, opts.GetValueOrDefault("variant", "tiny"));
                     default:
                         Console.Error.WriteLine($"[错误] 未知模块: {module}");
                         PrintUsage();
@@ -367,6 +369,138 @@ namespace Sam2VectorRunner
             Safetensors.SaveStateDict(outputPath, outDict);
 
             Console.WriteLine($"[sam2_image] image_embed={string.Join('x', imageEmbed.shape)}");
+            foreach (var kv in outDict)
+            {
+                Console.WriteLine($"  {kv.Key}: {string.Join('x', kv.Value.shape)}");
+            }
+            Console.WriteLine($"已保存: {outputPath}");
+
+            return 0;
+        }
+
+        private static int RunSam2Real(string dir, string variant)
+        {
+            using var _ = NewDisposeScope();
+            using var noGrad = no_grad();
+
+            const int imageSize = 1024;
+            const int dModel = 256;
+
+            Hiera trunk = variant switch
+            {
+                "tiny" => new Hiera(
+                    embedDim: 96, numHeads: 1,
+                    stages: new[] { 1, 2, 7, 2 },
+                    globalAttBlocks: new[] { 5, 7, 9 },
+                    windowPosEmbedBkgSpatialSize: (7, 7),
+                    windowSpec: new[] { 8, 4, 14, 7 }),
+                "small" => new Hiera(
+                    embedDim: 96, numHeads: 1,
+                    stages: new[] { 1, 2, 11, 2 },
+                    globalAttBlocks: new[] { 7, 10, 13 },
+                    windowPosEmbedBkgSpatialSize: (7, 7),
+                    windowSpec: new[] { 8, 4, 14, 7 }),
+                _ => throw new ArgumentException($"未知 variant: {variant}")
+            };
+
+            var positionEncoding = new PositionEmbeddingSine(numPosFeats: dModel, normalize: true);
+            var neck = new FpnNeck(
+                positionEncoding: positionEncoding,
+                dModel: dModel,
+                backboneChannelList: trunk.ChannelList,
+                fpnTopDownLevels: new[] { 2, 3 },
+                fpnInterpModel: "nearest");
+            var imageEncoder = new ImageEncoder(trunk, neck, scalp: 1);
+
+            var promptEncoder = new SAMTorchSharp.Modeling.Sam2.PromptEncoder(
+                embed_dim: dModel,
+                image_embedding_size: (imageSize / 16, imageSize / 16),
+                input_image_size: (imageSize, imageSize),
+                mask_in_chans: 16);
+
+            var transformer = new TwoWayTransformer(depth: 2, embeddingDim: dModel, numHeads: 8, mlpDim: 2048);
+            var maskDecoder = new MaskDecoder(
+                transformerDim: dModel,
+                transformer: transformer,
+                numMultimaskOutputs: 3,
+                iouHeadDepth: 3,
+                iouHeadHiddenDim: 256,
+                useHighResFeatures: true,
+                iouPredictionUseSigmoid: true,
+                dynamicMultimaskViaStability: true,
+                predObjScores: true,
+                predObjScoresMlp: true,
+                useMultimaskTokenForObjPtr: true);
+
+            var model = new Sam2Base(
+                imageEncoder, promptEncoder, maskDecoder,
+                imageSize: imageSize, backboneStride: 16,
+                useHighResFeaturesInSam: true, directlyAddNoMemEmbed: true);
+            model.eval();
+
+            model.load_safetensors(Path.Combine(dir, "weights.safetensors"));
+
+            var inputs = Safetensors.LoadStateDict(Path.Combine(dir, "input.safetensors"));
+            Tensor preprocessed = inputs["preprocessed_image"];
+            Tensor pointCoordsOrig = inputs["point_coords_orig"]; // 1xNx2, (x,y) in orig pixel coords
+            Tensor pointLabels = inputs["point_labels"];
+            Tensor origHw = inputs["orig_hw"]; // [[h, w]]
+
+            double origH = origHw[0, 0].item<float>();
+            double origW = origHw[0, 1].item<float>();
+
+            // 对应 SAM2Transforms.transform_coords(normalize=True): coords/[w,h] * resolution
+            Tensor pointCoords1024 = pointCoordsOrig.clone();
+            pointCoords1024[TensorIndex.Ellipsis, TensorIndex.Single(0)] =
+                pointCoords1024[TensorIndex.Ellipsis, TensorIndex.Single(0)] / origW * imageSize;
+            pointCoords1024[TensorIndex.Ellipsis, TensorIndex.Single(1)] =
+                pointCoords1024[TensorIndex.Ellipsis, TensorIndex.Single(1)] / origH * imageSize;
+
+            var backboneOut = model.ForwardImage(preprocessed);
+            var (visionFeats, _) = model.PrepareBackboneFeatures(backboneOut);
+            visionFeats[^1] = visionFeats[^1] + model.no_mem_embed;
+
+            var bbFeatSizes = new (long, long)[] { (256, 256), (128, 128), (64, 64) };
+            var feats = new Tensor[visionFeats.Count];
+            for (int i = 0; i < visionFeats.Count; i++)
+            {
+                int reversedIdx = visionFeats.Count - 1 - i;
+                var (h, w) = bbFeatSizes[reversedIdx];
+                feats[reversedIdx] = visionFeats[reversedIdx].permute(1, 2, 0).view(1, -1, h, w);
+            }
+            Tensor imageEmbed = feats[^1];
+            var highResFeats = feats.Take(feats.Length - 1).ToList();
+
+            var (sparseEmbeddings, denseEmbeddings) = promptEncoder.forward(
+                Tuple.Create(pointCoords1024, pointLabels), null, null);
+
+            var (lowResMasksRaw, iouPredictions, _, _) = maskDecoder.forward(
+                imageEmbed, promptEncoder.get_dense_pe(), sparseEmbeddings, denseEmbeddings,
+                true, false, highResFeats);
+
+            Tensor lowResMasks = lowResMasksRaw.clamp(-32.0, 32.0);
+
+            // 对应 SAM2Transforms.postprocess_masks：双线性插值回原图分辨率（不含孔洞填充，max_hole_area=0）
+            Tensor masks = functional.interpolate(
+                lowResMasksRaw.to(ScalarType.Float32),
+                size: new long[] { (long)origH, (long)origW },
+                mode: InterpolationMode.Bilinear,
+                align_corners: false);
+
+            // Python 端 predictor.predict() 会 squeeze(0) 去掉 batch 维，这里保持输出对齐以便直接比对。
+            var outDict = new Dictionary<string, Tensor>
+            {
+                ["image_embed"] = imageEmbed.contiguous(),
+                ["high_res_feat_0"] = highResFeats[0].contiguous(),
+                ["high_res_feat_1"] = highResFeats[1].contiguous(),
+                ["low_res_masks"] = lowResMasks.squeeze(0).contiguous(),
+                ["iou_predictions"] = iouPredictions.squeeze(0).contiguous(),
+                ["masks"] = masks.squeeze(0).contiguous(),
+            };
+            string outputPath = Path.Combine(dir, "output_net.safetensors");
+            Safetensors.SaveStateDict(outputPath, outDict);
+
+            Console.WriteLine($"[sam2_real:{variant}] image_embed={string.Join('x', imageEmbed.shape)}");
             foreach (var kv in outDict)
             {
                 Console.WriteLine($"  {kv.Key}: {string.Join('x', kv.Value.shape)}");
