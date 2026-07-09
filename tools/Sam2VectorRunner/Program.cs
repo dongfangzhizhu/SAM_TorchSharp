@@ -42,6 +42,8 @@ namespace Sam2VectorRunner
                         return RunHiera(dir, opts.GetValueOrDefault("variant", "tiny"));
                     case "image_encoder":
                         return RunImageEncoder(dir, opts.GetValueOrDefault("variant", "tiny"), int.Parse(opts.GetValueOrDefault("d-model", "256")));
+                    case "prompt_encoder":
+                        return RunPromptEncoder(dir);
                     default:
                         Console.Error.WriteLine($"[错误] 未知模块: {module}");
                         PrintUsage();
@@ -159,6 +161,51 @@ namespace Sam2VectorRunner
                 Console.WriteLine($"  {kv.Key}: {string.Join('x', kv.Value.shape)}");
             }
             Console.WriteLine($"已保存: {outputPath}");
+
+            return 0;
+        }
+
+        private static int RunPromptEncoder(string rootDir)
+        {
+            using var _ = NewDisposeScope();
+            using var noGrad = no_grad();
+
+            var model = new SAMTorchSharp.Modeling.Sam2.PromptEncoder(
+                embed_dim: 256,
+                image_embedding_size: (64, 64),
+                input_image_size: (1024, 1024),
+                mask_in_chans: 16);
+            model.eval();
+            model.load_safetensors(Path.Combine(rootDir, "weights.safetensors"));
+
+            foreach (var caseName in new[] { "points_only", "boxes_only", "points_boxes_masks" })
+            {
+                string caseDir = Path.Combine(rootDir, caseName);
+                string inputPath = Path.Combine(caseDir, "input.safetensors");
+                string outputPath = Path.Combine(caseDir, "output_net.safetensors");
+
+                var inputs = Safetensors.LoadStateDict(inputPath);
+
+                Tuple<Tensor, Tensor>? points = null;
+                if (inputs.ContainsKey("point_coords"))
+                {
+                    points = Tuple.Create(inputs["point_coords"], inputs["point_labels"]);
+                }
+                Tensor? boxes = inputs.TryGetValue("boxes", out var b) ? b : null;
+                Tensor? masks = inputs.TryGetValue("masks", out var m) ? m : null;
+
+                var (sparse, dense) = model.forward(points, boxes, masks);
+
+                var outDict = new Dictionary<string, Tensor>
+                {
+                    ["sparse_embeddings"] = sparse.contiguous(),
+                    ["dense_embeddings"] = dense.contiguous(),
+                };
+                Safetensors.SaveStateDict(outputPath, outDict);
+
+                Console.WriteLine($"[prompt_encoder:{caseName}] sparse={string.Join('x', sparse.shape)} dense={string.Join('x', dense.shape)}");
+                Console.WriteLine($"  已保存: {outputPath}");
+            }
 
             return 0;
         }
