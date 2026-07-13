@@ -59,6 +59,8 @@ namespace Sam2VectorRunner
                         return RunMemoryAttention(dir);
                     case "sam2_track_step":
                         return RunSam2TrackStep(dir, int.Parse(opts.GetValueOrDefault("image-size", "256")));
+                    case "sam2_video_real":
+                        return RunSam2VideoReal(dir, opts.GetValueOrDefault("variant", "tiny"));
                     default:
                         Console.Error.WriteLine($"[错误] 未知模块: {module}");
                         PrintUsage();
@@ -731,6 +733,140 @@ namespace Sam2VectorRunner
             {
                 Console.WriteLine($"  {kv.Key}: {string.Join('x', kv.Value.shape)}");
             }
+            Console.WriteLine($"已保存: {outputPath}");
+
+            return 0;
+        }
+
+        private static int RunSam2VideoReal(string dir, string variant)
+        {
+            using var _ = NewDisposeScope();
+            using var noGrad = no_grad();
+
+            const int imageSize = 1024;
+            const long dModel = 256;
+            const long memDim = 64;
+
+            Hiera trunk = variant switch
+            {
+                "tiny" => new Hiera(
+                    embedDim: 96, numHeads: 1, stages: new[] { 1, 2, 7, 2 },
+                    globalAttBlocks: new[] { 5, 7, 9 }, windowPosEmbedBkgSpatialSize: (7, 7),
+                    windowSpec: new[] { 8, 4, 14, 7 }),
+                _ => throw new ArgumentException($"未知 variant: {variant}")
+            };
+
+            var positionEncoding = new PositionEmbeddingSine(numPosFeats: dModel, normalize: true);
+            var neck = new FpnNeck(
+                positionEncoding: positionEncoding, dModel: dModel, backboneChannelList: trunk.ChannelList,
+                fpnTopDownLevels: new[] { 2, 3 }, fpnInterpModel: "nearest");
+            var imageEncoder = new ImageEncoder(trunk, neck, scalp: 1);
+
+            var promptEncoder = new SAMTorchSharp.Modeling.Sam2.PromptEncoder(
+                embed_dim: (int)dModel,
+                image_embedding_size: (imageSize / 16, imageSize / 16),
+                input_image_size: (imageSize, imageSize),
+                mask_in_chans: 16);
+
+            var transformer = new TwoWayTransformer(depth: 2, embeddingDim: dModel, numHeads: 8, mlpDim: 2048);
+            var maskDecoder = new MaskDecoder(
+                transformerDim: dModel, transformer: transformer, numMultimaskOutputs: 3,
+                iouHeadDepth: 3, iouHeadHiddenDim: 256, useHighResFeatures: true,
+                iouPredictionUseSigmoid: true, dynamicMultimaskViaStability: true,
+                dynamicMultimaskStabilityDelta: 0.05, dynamicMultimaskStabilityThresh: 0.98,
+                predObjScores: true, predObjScoresMlp: true, useMultimaskTokenForObjPtr: true);
+
+            var selfAttn = new RoPEAttention(embeddingDim: dModel, numHeads: 1, downsampleRate: 1, ropeTheta: 10000.0, featSizes: (64, 64));
+            var crossAttn = new RoPEAttention(
+                embeddingDim: dModel, numHeads: 1, downsampleRate: 1, ropeTheta: 10000.0,
+                featSizes: (64, 64), ropeKRepeat: true, kvInDim: memDim);
+            var memAttnLayer = new MemoryAttentionLayer(
+                activation: "relu", crossAttention: crossAttn, dModel: dModel, dimFeedforward: 2048, dropout: 0.1,
+                posEncAtAttn: false, posEncAtCrossAttnKeys: true, posEncAtCrossAttnQueries: false, selfAttention: selfAttn);
+            var memoryAttention = new MemoryAttention(dModel: dModel, posEncAtInput: true, layer: memAttnLayer, numLayers: 4);
+
+            var maskDownsampler = new MaskDownSampler(kernelSize: 3, stride: 2, padding: 1);
+            var fuser = new Fuser(
+                layer: new CXBlock(dim: dModel, kernelSize: 7, padding: 3, layerScaleInitValue: 1e-6, useDwconv: true),
+                numLayers: 2);
+            var memPositionEncoding = new PositionEmbeddingSine(numPosFeats: memDim, normalize: true);
+            var memoryEncoder = new MemoryEncoder(outDim: memDim, maskDownsampler: maskDownsampler, fuser: fuser, positionEncoding: memPositionEncoding);
+
+            var model = new Sam2Base(
+                imageEncoder, promptEncoder, maskDecoder,
+                memoryAttention: memoryAttention, memoryEncoder: memoryEncoder,
+                numMaskmem: 7, imageSize: imageSize, backboneStride: 16,
+                sigmoidScaleForMemEnc: 20.0, sigmoidBiasForMemEnc: -10.0,
+                useMaskInputAsOutputWithoutSam: true, directlyAddNoMemEmbed: true,
+                useHighResFeaturesInSam: true, multimaskOutputInSam: true,
+                multimaskMinPtNum: 0, multimaskMaxPtNum: 1, multimaskOutputForTracking: true,
+                useObjPtrsInEncoder: true, addTposEncToObjPtrs: true, projTposEncInObjPtrs: true,
+                useSignedTposEncToObjPtrs: true, onlyObjPtrsInThePastForEval: true,
+                predObjScores: true, fixedNoObjPtr: true, useMlpForObjPtrProj: true, noObjEmbedSpatial: true);
+            model.eval();
+            model.load_safetensors(Path.Combine(dir, "weights.safetensors"), strict: true);
+
+            var inputs = Safetensors.LoadStateDict(Path.Combine(dir, "input.safetensors"));
+            Tensor preprocessedFrames = inputs["preprocessed_frames"]; // [numFrames,3,1024,1024]
+            Tensor pointCoordsOrig = inputs["point_coords"];
+            Tensor pointLabels = inputs["point_labels"];
+            Tensor origHw = inputs["orig_hw"];
+
+            double origH = origHw[0, 0].item<float>();
+            double origW = origHw[0, 1].item<float>();
+
+            // 对应 add_new_points_or_box 的坐标归一化: points/[W,H]*image_size
+            Tensor pointCoords1024 = pointCoordsOrig.clone();
+            pointCoords1024[TensorIndex.Ellipsis, TensorIndex.Single(0)] =
+                pointCoords1024[TensorIndex.Ellipsis, TensorIndex.Single(0)] / origW * imageSize;
+            pointCoords1024[TensorIndex.Ellipsis, TensorIndex.Single(1)] =
+                pointCoords1024[TensorIndex.Ellipsis, TensorIndex.Single(1)] / origH * imageSize;
+            Tensor pointLabelsInt = pointLabels.to(ScalarType.Int32);
+
+            long numFrames = preprocessedFrames.shape[0];
+            var outputDict = new VideoOutputDict();
+            var outDict = new Dictionary<string, Tensor>();
+
+            for (int frameIdx = 0; frameIdx < numFrames; frameIdx++)
+            {
+                Tensor frame = preprocessedFrames[TensorIndex.Single(frameIdx)].unsqueeze(0);
+                var backboneOut = model.ForwardImage(frame);
+                var (visionFeats, visionPos, featSizes) = model.PrepareBackboneFeatures(backboneOut);
+
+                FrameOutput frameOutput;
+                if (frameIdx == 0)
+                {
+                    var pointInputs = new PointInputs { PointCoords = pointCoords1024, PointLabels = pointLabelsInt };
+                    frameOutput = model.TrackStep(
+                        frameIdx: 0, isInitCondFrame: true,
+                        currentVisionFeats: visionFeats, currentVisionPosEmbeds: visionPos, featSizes: featSizes,
+                        pointInputs: pointInputs, maskInputs: null, outputDict: outputDict, numFrames: (int)numFrames,
+                        trackInReverse: false, runMemEncoder: true);
+                    outputDict.CondFrameOutputs[0] = frameOutput;
+                }
+                else
+                {
+                    frameOutput = model.TrackStep(
+                        frameIdx: frameIdx, isInitCondFrame: false,
+                        currentVisionFeats: visionFeats, currentVisionPosEmbeds: visionPos, featSizes: featSizes,
+                        pointInputs: null, maskInputs: null, outputDict: outputDict, numFrames: (int)numFrames,
+                        trackInReverse: false, runMemEncoder: true);
+                    outputDict.NonCondFrameOutputs[frameIdx] = frameOutput;
+                }
+
+                // 对应 _get_orig_video_res_output: 把 pred_masks(64x64的低分辨率logits) 插值回原始视频分辨率。
+                Tensor videoResMasks = functional.interpolate(
+                    frameOutput.PredMasks.to(ScalarType.Float32),
+                    size: new long[] { (long)origH, (long)origW },
+                    mode: InterpolationMode.Bilinear,
+                    align_corners: false);
+
+                outDict[$"frame{frameIdx}_masks"] = videoResMasks.contiguous();
+                Console.WriteLine($"[sam2_video_real] frame{frameIdx}: masks={string.Join('x', videoResMasks.shape)}");
+            }
+
+            string outputPath = Path.Combine(dir, "output_net.safetensors");
+            Safetensors.SaveStateDict(outputPath, outDict);
             Console.WriteLine($"已保存: {outputPath}");
 
             return 0;
