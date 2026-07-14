@@ -273,6 +273,96 @@ public class Sam3Base : Module
         return resultDict;
     }
 
+    /// <summary>
+    /// Run the encoder-decoder-segmentation pipeline using pre-extracted image features.
+    /// This is used by the predictor to avoid re-running the backbone.
+    /// </summary>
+    public Dictionary<string, Tensor> RunInferenceFromFeatures(
+        IList<Tensor> imgFeats,
+        IList<Tensor> imgPosEmbeds,
+        IList<long[]> visFeatSizes,
+        IDictionary<string, Tensor>? extraBackboneFeatures = null,
+        Sam3Prompt? geometricPrompt = null)
+    {
+        var gp = geometricPrompt ?? new Sam3Prompt();
+
+        // 1. Encode geometric prompts
+        var (geoFeats, geoMasks) = geometry_encoder.forward(gp, imgFeats.ToList(), visFeatSizes.ToList());
+
+        // 2. Get text features from extra backbone features
+        Tensor prompt;
+        Tensor? promptMask;
+
+        if (extraBackboneFeatures is not null &&
+            extraBackboneFeatures.TryGetValue("language_features", out var langFeat) &&
+            extraBackboneFeatures.TryGetValue("language_mask", out var langMask))
+        {
+            // langFeat: [seq_len, batch, d_model], geoFeats: list of Tensors per level
+            Tensor geoCombined = geoFeats[0];
+            for (int i = 1; i < geoFeats.Count; i++)
+            {
+                geoCombined = cat(new[] { geoCombined, geoFeats[i] }, dim: 0);
+            }
+
+            var promptList = new List<Tensor> { langFeat, geoCombined };
+            prompt = cat(promptList.ToArray(), dim: 0);
+
+            var maskList = new List<Tensor> { langMask };
+            foreach (var gm in geoMasks)
+            {
+                if (gm is not null) maskList.Add((Tensor)gm);
+            }
+            promptMask = torch.cat(maskList.ToArray(), dim: 1);
+        }
+        else
+        {
+            Tensor geoCombined = geoFeats[0];
+            for (int i = 1; i < geoFeats.Count; i++)
+            {
+                geoCombined = cat(new[] { geoCombined, geoFeats[i] }, dim: 0);
+            }
+            prompt = geoCombined;
+            promptMask = geoMasks.Count > 0 && geoMasks[0] is not null ? geoMasks[0] : null;
+        }
+
+        // 3. Run transformer encoder
+        var memory = transformer_encoder.forward(
+            imgFeats,
+            promptMask is not null ? new List<Tensor> { promptMask } : null,
+            imgPosEmbeds);
+
+        // 4. Run transformer decoder
+        var posEmbed = (Tensor)memory["pos_embed"];
+        var memTensor = (Tensor)memory["memory"];
+        var padMask = memory["padding_mask"] as Tensor;
+
+        var decoderResult = run_decoder(
+            posEmbed,
+            memTensor,
+            padMask,
+            prompt,
+            promptMask);
+
+        var resultDict = decoderResult.Item1;
+        var hs = decoderResult.Item2;
+
+        // 5. Run segmentation head if available
+        if (segmentation_head is not null)
+        {
+            var segResult = segmentation_head.forward(
+                new List<Tensor> { imgFeats.Last() },
+                hs,
+                null,  // encoder_hidden_states
+                prompt,
+                promptMask);
+            resultDict["pred_masks"] = segResult["pred_masks"];
+            if (segResult.ContainsKey("pred_logits"))
+                resultDict["pred_logits"] = segResult["pred_logits"];
+        }
+
+        return resultDict;
+    }
+
     public Tuple<Tensor, Tensor?> encode_prompts(
         IList<Tensor> img_feats,
         IList<Tensor> img_pos_embeds,

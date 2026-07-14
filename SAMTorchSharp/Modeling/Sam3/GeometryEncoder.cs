@@ -24,6 +24,42 @@ public class Sam3Prompt
     public int num_points { get; set; } = 0;
     public int num_boxes { get; set; } = 0;
     public int num_masks { get; set; } = 0;
+
+    /// <summary>
+    /// Append boxes to the prompt. Boxes should be [batch, num_boxes, 4] in normalized [cx, cy, w, h] format.
+    /// </summary>
+    public Sam3Prompt AppendBoxes(Tensor newBoxes)
+    {
+        if (this.boxes is null || this.boxes.numel() == 0)
+        {
+            this.boxes = newBoxes;
+            this.num_boxes = (int)newBoxes.size(1);
+        }
+        else
+        {
+            this.boxes = cat(new Tensor[] { this.boxes, newBoxes }, dim: 1);
+            this.num_boxes = (int)this.boxes.size(1);
+        }
+        return this;
+    }
+
+    /// <summary>
+    /// Append points to the prompt. Points should be [batch, num_points, 2] in normalized [x, y] format.
+    /// </summary>
+    public Sam3Prompt AppendPoints(Tensor newPoints)
+    {
+        if (this.points is null || this.points.numel() == 0)
+        {
+            this.points = newPoints;
+            this.num_points = (int)newPoints.size(1);
+        }
+        else
+        {
+            this.points = cat(new Tensor[] { this.points, newPoints }, dim: 1);
+            this.num_points = (int)this.points.size(1);
+        }
+        return this;
+    }
 }
 
 /// <summary>
