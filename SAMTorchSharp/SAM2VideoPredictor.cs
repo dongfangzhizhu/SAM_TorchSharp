@@ -8,7 +8,7 @@ using System.Collections.Concurrent;
 namespace SAMTorchSharp
 {
     /// <summary>
-    /// 单帧的稠密特征缓存（来自 _get_image_feature 的 PrepareBackboneFeatures 输出）。
+    /// Cached feature from _get_image_feature + PrepareBackboneFeatures output.
     /// </summary>
     public class CachedFeature
     {
@@ -19,7 +19,7 @@ namespace SAMTorchSharp
     }
 
     /// <summary>
-    /// 单个对象的 tracking output 记录，对应 Python 端 FrameOutput 的 compact 形式。
+    /// Per-object tracking output record, corresponding to Python's FrameOutput (compact form).
     /// </summary>
     public class TrackingFrameOutput
     {
@@ -31,7 +31,7 @@ namespace SAMTorchSharp
     }
 
     /// <summary>
-    /// 单个对象的输出字典（cond / non_cond frame outputs）。
+    /// Per-object output dict (cond / non_cond frame outputs).
     /// </summary>
     public class ObjectOutputDict
     {
@@ -40,7 +40,7 @@ namespace SAMTorchSharp
     }
 
     /// <summary>
-    /// 点提示输入（带 frame_idx key）。
+    /// Point prompt input (stored by frame_idx key).
     /// </summary>
     public class PointInputPerFrame
     {
@@ -49,9 +49,19 @@ namespace SAMTorchSharp
     }
 
     /// <summary>
-    /// SAM2 视频推理高层封装。
-    /// 对应 Python 端 sam2/sam2_video_predictor.py: SAM2VideoPredictor。
-    /// 管理 inference_state（字典式），提供 init_state / add_new_points_or_box / propagate_in_video 等交互接口。
+    /// Entry record in frames_tracked_per_obj.
+    /// </summary>
+    public class FrameTrackedInfo
+    {
+        public bool Reverse { get; set; }
+    }
+
+    /// <summary>
+    /// SAM2 video inference high-level wrapper.
+    /// Corresponds to sam2/sam2_video_predictor.py: SAM2VideoPredictor.
+    /// Manages inference_state (dictionary-based), provides init_state,
+    /// add_new_points_or_box, add_new_mask, propagate_in_video,
+    /// clear_all_prompts_in_frame, reset_state.
     /// </summary>
     public class SAM2VideoPredictor : IDisposable
     {
@@ -62,7 +72,6 @@ namespace SAMTorchSharp
         private readonly bool _addAllFramesToCorrectAsCond;
         private readonly Device _modelDevice;
 
-        /// <summary>图像尺寸。</summary>
         public int ImageSize => _model.image_size;
 
         public SAM2VideoPredictor(Sam2Base model,
@@ -76,8 +85,6 @@ namespace SAMTorchSharp
             _nonOverlapMasks = nonOverlapMasks;
             _clearNonCondMemAroundInput = clearNonCondMemAroundInput;
             _addAllFramesToCorrectAsCond = addAllFramesToCorrectAsCond;
-            // TorchSharp Module doesn't expose .device() on non-generic Module.
-            // Get device from the first parameter tensor.
             _modelDevice = _model.parameters().FirstOrDefault()?.device ?? CPU;
         }
 
@@ -86,15 +93,8 @@ namespace SAMTorchSharp
         // =====================================================================
 
         /// <summary>
-        /// 初始化推理状态。
-        /// 对应 Python: init_state(video_path, ...)
-        /// .NET 实现假设调用方已经加载好帧张量，直接传入 images 数组。
+        /// Initialize inference state.
         /// </summary>
-        /// <param name="images">预处理后的帧张量 [num_frames, 3, H, W]，已归一化到 image_size。</param>
-        /// <param name="originalHeight">原始视频高度。</param>
-        /// <param name="originalWidth">原始视频宽度。</param>
-        /// <param name="offloadStateToCPU">是否将推理状态 offload 到 CPU 以节省 GPU 显存。</param>
-        /// <returns>inference_state 字典。</returns>
         public Dictionary<string, object> InitState(Tensor images, long originalHeight, long originalWidth, bool offloadStateToCPU = false)
         {
             var state = new Dictionary<string, object>();
@@ -118,7 +118,7 @@ namespace SAMTorchSharp
             state["obj_ids"] = new List<long>();
             state["output_dict_per_obj"] = new Dictionary<long, ObjectOutputDict>();
             state["temp_output_dict_per_obj"] = new Dictionary<long, ObjectOutputDict>();
-            state["frames_tracked_per_obj"] = new Dictionary<long, Dictionary<int, bool>>();
+            state["frames_tracked_per_obj"] = new Dictionary<long, Dictionary<int, FrameTrackedInfo>>();
 
             // Warm up frame 0
             _GetImageFeature(state, 0, 1);
@@ -127,17 +127,8 @@ namespace SAMTorchSharp
         }
 
         /// <summary>
-        /// 添加新点（或框）到指定帧。
-        /// 对应 Python: add_new_points_or_box
+        /// Add new points (or box) to a frame.
         /// </summary>
-        /// <param name="state">推理状态字典。</param>
-        /// <param name="frameIdx">帧索引。</param>
-        /// <param name="objId">客户端对象 ID。</param>
-        /// <param name="points">点坐标 [B, N, 2]，值域为原始图像像素坐标。</param>
-        /// <param name="labels">点标签 [B, N]，1=前景, 0=背景, 2=左上角框, 3=右下角框。</param>
-        /// <param name="clearOldPoints">是否清除该对象在该帧之前的所有点。</param>
-        /// <param name="box">可选框 [B, 4]，(x0, y0, x1, y1)。</param>
-        /// <returns>(frame_idx, obj_ids, video_res_masks)</returns>
         public (int FrameIdx, List<long> ObjIds, Tensor VideoResMasks) AddNewPointsOrBox(
             Dictionary<string, object> state,
             int frameIdx,
@@ -150,17 +141,6 @@ namespace SAMTorchSharp
             var objIdx = _ObjIdToIdx(state, objId);
             var pointInputsPerFrame = (Dictionary<long, Dictionary<int, PointInputPerFrame>>)state["point_inputs_per_obj"];
             var maskInputsPerFrame = (Dictionary<long, Dictionary<int, Tensor>>)state["mask_inputs_per_obj"];
-
-            var ptInputs = pointInputsPerFrame.TryGetValue(objIdx, out var v1) ? v1 : new Dictionary<int, PointInputPerFrame>();
-            var msInputs = maskInputsPerFrame.TryGetValue(objIdx, out var v2) ? v2 : new Dictionary<int, Tensor>();
-
-            if (!ptInputs.ContainsKey(frameIdx))
-                ptInputs[frameIdx] = new PointInputPerFrame();
-            if (!msInputs.ContainsKey(frameIdx))
-                msInputs[frameIdx] = default!;
-
-            pointInputsPerFrame[objIdx] = ptInputs;
-            maskInputsPerFrame[objIdx] = msInputs;
 
             var videoH = (long)state["video_height"];
             var videoW = (long)state["video_width"];
@@ -178,18 +158,16 @@ namespace SAMTorchSharp
             var hTensor = tensor((float)videoH, device: device);
             var imgSizeTensor = tensor((float)_model.image_size, device: device);
 
-            // Use .index() to read, then assign via index_put_ with proper indexing
-            var idx0 = new TensorIndex[] { TensorIndex.Ellipsis, 0 };
-            var idx1 = new TensorIndex[] { TensorIndex.Ellipsis, 1 };
-            var col0 = ptsNormalized.index(idx0);
-            var col1 = ptsNormalized.index(idx1);
+            var col0 = ptsNormalized.index(new TensorIndex[] { TensorIndex.Ellipsis, 0 });
+            var col1 = ptsNormalized.index(new TensorIndex[] { TensorIndex.Ellipsis, 1 });
             col0 = (col0 / wTensor) * imgSizeTensor;
             col1 = (col1 / hTensor) * imgSizeTensor;
-            // Rebuild tensor with modified columns
             var cols = stack(new[] { col0, col1 }, dim: -1);
 
             if (box is not null)
             {
+                if (!clearOldPoints)
+                    throw new InvalidOperationException("cannot add box without clearing old points");
                 var b = box.to(device).reshape(1, 2, 2);
                 var bl = tensor(new long[] { 2, 3 }, dtype: ScalarType.Int32, device: device).reshape(1, 2);
                 cols = cat(new[] { b, cols }, dim: 1);
@@ -200,7 +178,10 @@ namespace SAMTorchSharp
                 ptsNormalized = cols;
             }
 
-            // Concat with existing points on this frame
+            var ptInputs = pointInputsPerFrame[objIdx];
+            if (!ptInputs.ContainsKey(frameIdx))
+                ptInputs[frameIdx] = new PointInputPerFrame();
+
             var existing = ptInputs[frameIdx];
             if (existing is not null && !clearOldPoints)
             {
@@ -213,13 +194,12 @@ namespace SAMTorchSharp
                 PointCoords = ptsNormalized.contiguous(),
                 PointLabels = lbls.contiguous()
             };
-            msInputs.Remove(frameIdx);
+            maskInputsPerFrame[objIdx].Remove(frameIdx);
 
-            // Determine if init_cond_frame
-            var framesTracked = (Dictionary<long, Dictionary<int, bool>>)state["frames_tracked_per_obj"];
-            var objTracked = framesTracked.TryGetValue(objIdx, out var ft) ? ft : new Dictionary<int, bool>();
+            var framesTracked = (Dictionary<long, Dictionary<int, FrameTrackedInfo>>)state["frames_tracked_per_obj"];
+            var objTracked = framesTracked[objIdx];
             bool isInitCondFrame = !objTracked.ContainsKey(frameIdx);
-            bool reverse = isInitCondFrame ? false : objTracked[frameIdx];
+            bool reverse = isInitCondFrame ? false : objTracked[frameIdx].Reverse;
 
             var outputDicts = (Dictionary<long, ObjectOutputDict>)state["output_dict_per_obj"];
             var tempOutputDicts = (Dictionary<long, ObjectOutputDict>)state["temp_output_dict_per_obj"];
@@ -265,7 +245,6 @@ namespace SAMTorchSharp
             else
                 objTempOutputDict.NonCondFrameOutputs[frameIdx] = currentOut;
 
-            // Consolidate & resize
             var objIds = (List<long>)state["obj_ids"];
             var consolidated = _ConsolidateTempOutputAcrossObj(state, frameIdx, isCond, consolidateAtVideoRes: true);
             var (_, videoResMasks) = _GetOrigVideoResOutput(state, consolidated["pred_masks"]);
@@ -274,8 +253,122 @@ namespace SAMTorchSharp
         }
 
         /// <summary>
-        /// 在视频中传播跟踪（yield-based generator）。
-        /// 对应 Python: propagate_in_video
+        /// Add new mask to a frame.
+        /// </summary>
+        public (int FrameIdx, List<long> ObjIds, Tensor VideoResMasks) AddNewMask(
+            Dictionary<string, object> state,
+            int frameIdx,
+            long objId,
+            Tensor mask)
+        {
+            var objIdx = _ObjIdToIdx(state, objId);
+            var maskInputsPerFrame = (Dictionary<long, Dictionary<int, Tensor>>)state["mask_inputs_per_obj"];
+            var pointInputsPerFrame = (Dictionary<long, Dictionary<int, PointInputPerFrame>>)state["point_inputs_per_obj"];
+
+            var modelDevice = _modelDevice;
+
+            Tensor maskInput;
+            if (mask.dtype != ScalarType.Float32)
+            {
+                maskInput = mask.to(ScalarType.Float32, device: modelDevice).unsqueeze(0).unsqueeze(0);
+            }
+            else
+            {
+                maskInput = mask.unsqueeze(0).unsqueeze(0);
+            }
+
+            long maskH = maskInput.size(2);
+            long maskW = maskInput.size(3);
+
+            if (maskH != _model.image_size || maskW != _model.image_size)
+            {
+                maskInput = interpolate(maskInput,
+                    size: new long[] { _model.image_size, _model.image_size },
+                    mode: InterpolationMode.Bilinear, align_corners: false);
+                maskInput = (maskInput >= 0.5f).to(ScalarType.Float32);
+            }
+
+            maskInputsPerFrame[objIdx][frameIdx] = maskInput;
+            pointInputsPerFrame[objIdx].Remove(frameIdx);
+
+            var framesTracked = (Dictionary<long, Dictionary<int, FrameTrackedInfo>>)state["frames_tracked_per_obj"];
+            var objTracked = framesTracked[objIdx];
+            bool isInitCondFrame = !objTracked.ContainsKey(frameIdx);
+            bool reverse = isInitCondFrame ? false : objTracked[frameIdx].Reverse;
+
+            var outputDicts = (Dictionary<long, ObjectOutputDict>)state["output_dict_per_obj"];
+            var tempOutputDicts = (Dictionary<long, ObjectOutputDict>)state["temp_output_dict_per_obj"];
+            var objOutputDict = outputDicts[objIdx];
+            var objTempOutputDict = tempOutputDicts[objIdx];
+
+            bool isCond = isInitCondFrame || _addAllFramesToCorrectAsCond;
+
+            var (currentOut, _) = _RunSingleFrameInference(
+                state, objOutputDict, frameIdx, 1, isInitCondFrame,
+                pointInputs: null, maskInputs: maskInput,
+                reverse, runMemEncoder: false);
+
+            if (isCond)
+                objTempOutputDict.CondFrameOutputs[frameIdx] = currentOut;
+            else
+                objTempOutputDict.NonCondFrameOutputs[frameIdx] = currentOut;
+
+            var objIds = (List<long>)state["obj_ids"];
+            var consolidated = _ConsolidateTempOutputAcrossObj(state, frameIdx, isCond, consolidateAtVideoRes: true);
+            var (_, videoResMasks) = _GetOrigVideoResOutput(state, consolidated["pred_masks"]);
+
+            return (frameIdx, objIds, videoResMasks);
+        }
+
+        /// <summary>
+        /// Remove all input points or mask in a specific frame for a given object.
+        /// </summary>
+        public (int FrameIdx, List<long> ObjIds, Tensor VideoResMasks)? ClearAllPromptsInFrame(
+            Dictionary<string, object> state,
+            int frameIdx,
+            long objId)
+        {
+            var objIdx = _ObjIdToIdx(state, objId);
+
+            var ptInputs = (Dictionary<long, Dictionary<int, PointInputPerFrame>>)state["point_inputs_per_obj"];
+            var msInputs = (Dictionary<long, Dictionary<int, Tensor>>)state["mask_inputs_per_obj"];
+            ptInputs[objIdx].Remove(frameIdx);
+            msInputs[objIdx].Remove(frameIdx);
+
+            var tempOutputDicts = (Dictionary<long, ObjectOutputDict>)state["temp_output_dict_per_obj"];
+            tempOutputDicts[objIdx].CondFrameOutputs.Remove(frameIdx);
+            tempOutputDicts[objIdx].NonCondFrameOutputs.Remove(frameIdx);
+
+            var outputDicts = (Dictionary<long, ObjectOutputDict>)state["output_dict_per_obj"];
+            var objOutputDict = outputDicts[objIdx];
+            var outRec = objOutputDict.CondFrameOutputs.GetValueOrDefault(frameIdx);
+            if (outRec != null)
+            {
+                objOutputDict.CondFrameOutputs.Remove(frameIdx);
+                objOutputDict.NonCondFrameOutputs[frameIdx] = outRec;
+                var framesTracked = (Dictionary<long, Dictionary<int, FrameTrackedInfo>>)state["frames_tracked_per_obj"];
+                framesTracked[objIdx].Remove(frameIdx);
+            }
+
+            var objIds = (List<long>)state["obj_ids"];
+            bool isCond = false;
+            foreach (var tmpDict in tempOutputDicts.Values)
+            {
+                if (tmpDict.CondFrameOutputs.ContainsKey(frameIdx))
+                {
+                    isCond = true;
+                    break;
+                }
+            }
+
+            var consolidated = _ConsolidateTempOutputAcrossObj(state, frameIdx, isCond, consolidateAtVideoRes: true);
+            var (_, videoResMasks) = _GetOrigVideoResOutput(state, consolidated["pred_masks"]);
+
+            return (frameIdx, objIds, videoResMasks);
+        }
+
+        /// <summary>
+        /// Propagate the input points across frames to track in the entire video.
         /// </summary>
         public IEnumerable<(int FrameIdx, List<long> ObjIds, Tensor VideoResMasks)> PropagateInVideo(
             Dictionary<string, object> state,
@@ -288,6 +381,7 @@ namespace SAMTorchSharp
             var objIds = (List<long>)state["obj_ids"];
             var numFrames = (long)state["num_frames"];
             var outputDicts = (Dictionary<long, ObjectOutputDict>)state["output_dict_per_obj"];
+            var batch = outputDicts.Count;
 
             int start;
             if (startFrameIdx == null)
@@ -331,12 +425,11 @@ namespace SAMTorchSharp
 
             foreach (int frameIdx in processingOrder)
             {
-                var predMasksPerObj = new List<Tensor>(outputDicts.Count);
+                var predMasksPerObj = new List<Tensor>(batch);
 
-                foreach (var kvp in outputDicts)
+                for (int objIdx = 0; objIdx < batch; objIdx++)
                 {
-                    var objIdx = kvp.Key;
-                    var objOutputDict = kvp.Value;
+                    var objOutputDict = outputDicts[objIdx];
 
                     if (objOutputDict.CondFrameOutputs.ContainsKey(frameIdx))
                     {
@@ -344,7 +437,7 @@ namespace SAMTorchSharp
                         var predMasks = currentOut.PredMasks.to(_modelDevice);
                         if (_clearNonCondMemAroundInput)
                         {
-                            _ClearNonCondMemAroundInput(state, frameIdx);
+                            _ClearNonCondMemAroundInput(state, frameIdx, objIdx);
                         }
                         predMasksPerObj.Add(predMasks);
                     }
@@ -357,10 +450,11 @@ namespace SAMTorchSharp
 
                         objOutputDict.NonCondFrameOutputs[frameIdx] = compactOut;
 
-                        var trackedDict = (Dictionary<long, Dictionary<int, bool>>)state["frames_tracked_per_obj"];
-                        var objTracked = trackedDict.TryGetValue(objIdx, out var ot) ? ot : new Dictionary<int, bool>();
-                        objTracked[frameIdx] = reverse;
-                        trackedDict[objIdx] = objTracked;
+                        var framesTracked = (Dictionary<long, Dictionary<int, FrameTrackedInfo>>)state["frames_tracked_per_obj"];
+                        if (!framesTracked[objIdx].ContainsKey(frameIdx))
+                            framesTracked[objIdx][frameIdx] = new FrameTrackedInfo { Reverse = reverse };
+                        else
+                            framesTracked[objIdx][frameIdx].Reverse = reverse;
 
                         predMasksPerObj.Add(predMasksGpu);
                     }
@@ -382,7 +476,7 @@ namespace SAMTorchSharp
         }
 
         /// <summary>
-        /// 重置状态（清除所有对象和 tracking 结果）。
+        /// Remove all input points or mask in all frames throughout the video.
         /// </summary>
         public void ResetState(Dictionary<string, object> state)
         {
@@ -418,20 +512,17 @@ namespace SAMTorchSharp
             var msInputs = (Dictionary<long, Dictionary<int, Tensor>>)state["mask_inputs_per_obj"];
             var outputDicts = (Dictionary<long, ObjectOutputDict>)state["output_dict_per_obj"];
             var tempOutputDicts = (Dictionary<long, ObjectOutputDict>)state["temp_output_dict_per_obj"];
-            var framesTracked = (Dictionary<long, Dictionary<int, bool>>)state["frames_tracked_per_obj"];
+            var framesTracked = (Dictionary<long, Dictionary<int, FrameTrackedInfo>>)state["frames_tracked_per_obj"];
 
             ptInputs[idx] = new Dictionary<int, PointInputPerFrame>();
             msInputs[idx] = new Dictionary<int, Tensor>();
             outputDicts[idx] = new ObjectOutputDict();
             tempOutputDicts[idx] = new ObjectOutputDict();
-            framesTracked[idx] = new Dictionary<int, bool>();
+            framesTracked[idx] = new Dictionary<int, FrameTrackedInfo>();
 
             return idx;
         }
 
-        /// <summary>
-        /// 对应 Python: _get_image_feature
-        /// </summary>
         private void _GetImageFeature(Dictionary<string, object> state, int frameIdx, long batchSize)
         {
             var cachedFeatures = (Dictionary<int, CachedFeature>)state["cached_features"];
@@ -441,10 +532,9 @@ namespace SAMTorchSharp
             var images = (Tensor)state["images"];
             var device = (Device)state["device"];
 
-            var image = images[frameIdx].to(device).to(ScalarType.Float32).unsqueeze(0); // [1,3,H,W]
+            var image = images[frameIdx].to(device).to(ScalarType.Float32).unsqueeze(0);
             var backboneOut = _model.ForwardImage(image);
 
-            // Expand to batchSize
             var expandedFpn = backboneOut.BackboneFpn.Select(f => f.expand(new long[] { batchSize, -1, -1, -1 })).ToList();
             var expandedPos = backboneOut.VisionPosEnc.Select(p => p.expand(new long[] { batchSize, -1, -1, -1 })).ToList();
 
@@ -463,9 +553,6 @@ namespace SAMTorchSharp
             };
         }
 
-        /// <summary>
-        /// 对应 Python: _run_single_frame_inference
-        /// </summary>
         private (TrackingFrameOutput CompactOut, Tensor PredMasksGpu) _RunSingleFrameInference(
             Dictionary<string, object> state,
             ObjectOutputDict outputDict,
@@ -487,7 +574,6 @@ namespace SAMTorchSharp
                 cached = cachedFeatures[frameIdx];
             }
 
-            // Expand cached feature to batchSize if needed
             if (cached.Image.size(0) != batchSize)
             {
                 var expandedImage = cached.Image.expand(new long[] { batchSize, -1, -1, -1 });
@@ -507,7 +593,6 @@ namespace SAMTorchSharp
 
             var (visionFeats, visionPos, featSizes) = cached.Expanded;
 
-            // Build VideoOutputDict from ObjectOutputDict
             var videoOutputDict = new VideoOutputDict();
             foreach (var kv in outputDict.CondFrameOutputs)
             {
@@ -548,7 +633,6 @@ namespace SAMTorchSharp
                 runMemEncoder: runMemEncoder,
                 prevSamMaskLogits: prevSamMaskLogits);
 
-            // Offload to storage device
             Tensor maskmemFeatures = currentOut.MaskmemFeatures;
             if (maskmemFeatures is not null)
             {
@@ -557,7 +641,6 @@ namespace SAMTorchSharp
 
             Tensor predMasksGpu = currentOut.PredMasks.to(storageDevice, non_blocking: true);
 
-            // maskmem_pos_enc is same across frames, cache in constants
             var constants = (Dictionary<string, object>)state["constants"];
             IList<Tensor>? maskmemPosEnc = currentOut.MaskmemPosEnc;
             if (maskmemPosEnc != null && maskmemPosEnc.Count > 0)
@@ -565,11 +648,6 @@ namespace SAMTorchSharp
                 if (!constants.ContainsKey("maskmem_pos_enc"))
                 {
                     constants["maskmem_pos_enc"] = maskmemPosEnc.Select(m => m.index(0)).ToList();
-                }
-                else
-                {
-                    var cachedPos = (IList<Tensor>)constants["maskmem_pos_enc"];
-                    maskmemPosEnc = cachedPos.Select(p => p.expand(new long[] { batchSize, -1, -1, -1 })).ToList();
                 }
             }
 
@@ -585,9 +663,6 @@ namespace SAMTorchSharp
             return (compactOut, predMasksGpu);
         }
 
-        /// <summary>
-        /// 对应 Python: _consolidate_temp_output_across_obj
-        /// </summary>
         private Dictionary<string, Tensor> _ConsolidateTempOutputAcrossObj(
             Dictionary<string, object> state,
             int frameIdx,
@@ -599,7 +674,6 @@ namespace SAMTorchSharp
             var storageDevice = (Device)state["storage_device"];
             var numObjects = outputDicts.Count;
 
-            string storageKey = isCond ? "cond" : "non_cond";
             long consolidatedH, consolidatedW;
             if (consolidateAtVideoRes)
             {
@@ -611,8 +685,9 @@ namespace SAMTorchSharp
                 consolidatedH = consolidatedW = _model.image_size / 4;
             }
 
+            const float NoObjScore = -1024.0f;
             var predMasks = full(new long[] { numObjects, 1, consolidatedH, consolidatedW },
-                -1024.0, dtype: ScalarType.Float32, device: storageDevice);
+                NoObjScore, dtype: ScalarType.Float32, device: storageDevice);
 
             foreach (var kvp in outputDicts)
             {
@@ -639,7 +714,6 @@ namespace SAMTorchSharp
                 var objMask = outRec.PredMasks;
                 if (objMask.shape[2] == consolidatedH && objMask.shape[3] == consolidatedW)
                 {
-                    // Assign via .index() = 
                     predMasks.index(new TensorIndex[] { objIdx }).copy_(objMask);
                 }
                 else
@@ -654,9 +728,6 @@ namespace SAMTorchSharp
             return new Dictionary<string, Tensor> { { "pred_masks", predMasks } };
         }
 
-        /// <summary>
-        /// 对应 Python: _get_orig_video_res_output
-        /// </summary>
         private (Tensor AnyResMasks, Tensor VideoResMasks) _GetOrigVideoResOutput(
             Dictionary<string, object> state, Tensor anyResMasks)
         {
@@ -686,21 +757,18 @@ namespace SAMTorchSharp
             return (anyResMasks, videoResMasks);
         }
 
-        /// <summary>
-        /// 对应 Python: propagate_in_video_preflight
-        /// </summary>
         private void _PropagateInVideoPreflight(Dictionary<string, object> state)
         {
             var outputDicts = (Dictionary<long, ObjectOutputDict>)state["output_dict_per_obj"];
             var tempOutputDicts = (Dictionary<long, ObjectOutputDict>)state["temp_output_dict_per_obj"];
             var device = (Device)state["device"];
+            var batch = outputDicts.Count;
 
-            if (outputDicts.Count == 0)
+            if (batch == 0)
                 throw new InvalidOperationException("No input points or masks are provided for any object.");
 
-            foreach (var kvp in outputDicts)
+            for (int objIdx = 0; objIdx < batch; objIdx++)
             {
-                var objIdx = kvp.Key;
                 var objOutputDict = outputDicts[objIdx];
                 var objTempDict = tempOutputDicts[objIdx];
 
@@ -732,18 +800,16 @@ namespace SAMTorchSharp
 
                         if (_clearNonCondMemAroundInput)
                         {
-                            _ClearNonCondMemAroundInput(state, frameIdx);
+                            _ClearNonCondMemAroundInput(state, frameIdx, objIdx);
                         }
                     }
 
-                    // Clear temp outputs
                     if (isCondFlag)
                         objTempDict.CondFrameOutputs.Clear();
                     else
                         objTempDict.NonCondFrameOutputs.Clear();
                 }
 
-                // Edge case: remove non_cond output on same frame as cond
                 foreach (var frameIdx in objOutputDict.CondFrameOutputs.Keys.ToArray())
                 {
                     objOutputDict.NonCondFrameOutputs.Remove(frameIdx);
@@ -751,9 +817,6 @@ namespace SAMTorchSharp
             }
         }
 
-        /// <summary>
-        /// 对应 Python: _encode_new_memory（直接复用 Sam2Base.EncodeNewMemory）。
-        /// </summary>
         private (Tensor MaskmemFeatures, IList<Tensor> MaskmemPosEnc) _EncodeNewMemory(
             Dictionary<string, object> state, int frameIdx, long batchSize,
             Tensor highResMasks, Tensor objectScoreLogits)
@@ -765,24 +828,17 @@ namespace SAMTorchSharp
             return _model.EncodeNewMemory(visionFeats, featSizes, highResMasks, objectScoreLogits);
         }
 
-        /// <summary>
-        /// 对应 Python: _clear_non_cond_mem_around_input
-        /// </summary>
-        private void _ClearNonCondMemAroundInput(Dictionary<string, object> state, int frameIdx)
+        private void _ClearNonCondMemAroundInput(Dictionary<string, object> state, int frameIdx, int objIdx)
         {
             var outputDicts = (Dictionary<long, ObjectOutputDict>)state["output_dict_per_obj"];
             var r = _model.memory_temporal_stride_for_eval;
             int begin = frameIdx - r * _model.num_maskmem;
             int end = frameIdx + r * _model.num_maskmem;
 
-            foreach (var kvp in outputDicts)
+            var objOutputDict = outputDicts[objIdx];
+            for (int t = begin; t <= end; t++)
             {
-                var objIdx = kvp.Key;
-                var objOutputDict = outputDicts[objIdx];
-                for (int t = begin; t <= end; t++)
-                {
-                    objOutputDict.NonCondFrameOutputs.Remove(t);
-                }
+                objOutputDict.NonCondFrameOutputs.Remove(t);
             }
         }
 
@@ -792,7 +848,7 @@ namespace SAMTorchSharp
             var msInputs = (Dictionary<long, Dictionary<int, Tensor>>)state["mask_inputs_per_obj"];
             var outputDicts = (Dictionary<long, ObjectOutputDict>)state["output_dict_per_obj"];
             var tempOutputDicts = (Dictionary<long, ObjectOutputDict>)state["temp_output_dict_per_obj"];
-            var framesTracked = (Dictionary<long, Dictionary<int, bool>>)state["frames_tracked_per_obj"];
+            var framesTracked = (Dictionary<long, Dictionary<int, FrameTrackedInfo>>)state["frames_tracked_per_obj"];
 
             foreach (var v in ptInputs.Values) v.Clear();
             foreach (var v in msInputs.Values) v.Clear();
