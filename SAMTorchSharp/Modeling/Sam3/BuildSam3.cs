@@ -44,7 +44,7 @@ public class BuildSam3
     public Sam3Base Build()
     {
         // 1. Build ViT-Det backbone
-        var backbone = new Sam3ViTDetBackbone(
+        var vit_backbone = new Sam3ViTDetBackbone(
             patch_size: 14,
             embed_dim: 1024,
             depth: 48,
@@ -57,7 +57,7 @@ public class BuildSam3
 
         // 3. Build FPN neck
         var neck = new Sam3DualViTDetNeck(
-            backbone,
+            vit_backbone,
             position_encoding,
             embed_dim,
             scale_factors: new float[] { 4.0f, 2.0f, 1.0f, 0.5f },
@@ -71,7 +71,8 @@ public class BuildSam3
             d_model: embed_dim,
             nhead: num_heads,
             num_layers: 1,
-            dim_feedforward: embed_dim * 4);
+            dim_feedforward: embed_dim * 4,
+            num_feature_levels: num_feature_levels);
 
         // 6. Build transformer decoder
         var transformer_decoder = new Sam3TransformerDecoder(

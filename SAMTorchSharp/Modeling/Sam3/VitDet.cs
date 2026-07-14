@@ -1,4 +1,4 @@
-﻿// Copyright (c) Sapiens AI. All rights reserved.
+// Copyright (c) Sapiens AI. All rights reserved.
 
 using TorchSharp;
 using TorchSharp.Modules;
@@ -18,17 +18,17 @@ public class Sam3Mlp : Module
 {
     public readonly Linear fc1;
     public readonly Linear fc2;
-    public readonly Module act;
+    public readonly Module<Tensor, Tensor> act;
     public readonly Dropout drop1;
     public readonly Dropout drop2;
-    public readonly Module norm;
+    public readonly Module<Tensor, Tensor> norm;
 
     public Sam3Mlp(
         long in_features,
         long? hidden_features = null,
         long? out_features = null,
         string act_layer = "gelu",
-        Module? norm_layer = null,
+        Module<Tensor, Tensor>? norm_layer = null,
         bool bias = true,
         double drop = 0.0)
         : base(nameof(Sam3Mlp))
@@ -36,11 +36,11 @@ public class Sam3Mlp : Module
         out_features ??= in_features;
         hidden_features ??= in_features;
 
-        fc1 = Linear(in_features, hidden_features.Value, bias: bias);
+        fc1 = Linear(in_features, hidden_features.Value, bias);
         act = GetActivation(act_layer);
         drop1 = Dropout(drop);
-        norm = norm_layer ?? Identity();
-        fc2 = Linear(hidden_features.Value, out_features.Value, bias: bias);
+        norm = norm_layer ?? (Module<Tensor, Tensor>)Identity();
+        fc2 = Linear(hidden_features.Value, out_features.Value, bias);
         drop2 = Dropout(drop);
     }
 
@@ -55,7 +55,7 @@ public class Sam3Mlp : Module
         return x;
     }
 
-    private static Module GetActivation(string act_layer)
+    private static Module<Tensor, Tensor> GetActivation(string act_layer)
     {
         return act_layer.ToLower() switch
         {
@@ -70,7 +70,7 @@ public class Sam3Mlp : Module
 /// DropPath (Stochastic Depth) as used in ViTDet.
 /// Ported from sam3/model/vitdet.py
 /// </summary>
-public class Sam3DropPath : Module
+public class Sam3DropPath : Module<Tensor, Tensor>
 {
     private readonly float drop_prob;
 
@@ -80,7 +80,7 @@ public class Sam3DropPath : Module
         this.drop_prob = drop_prob;
     }
 
-    public Tensor forward(Tensor x)
+    public override Tensor forward(Tensor x)
     {
         if (drop_prob == 0.0f)
             return x;
@@ -136,8 +136,8 @@ public class Sam3ComputeAxialCis : Module
         var freqs_x = outer(t_x, inv_freq);
         var freqs_y = outer(t_y, inv_freq);
 
-        var freqs_cis_x = ones_like(freqs_x).polar(freqs_x);
-        var freqs_cis_y = ones_like(freqs_y).polar(freqs_y);
+        var freqs_cis_x = cat(new[] { cos(freqs_x).unsqueeze(-1), sin(freqs_x).unsqueeze(-1) }, dim: -1);
+        var freqs_cis_y = cat(new[] { cos(freqs_y).unsqueeze(-1), sin(freqs_y).unsqueeze(-1) }, dim: -1);
 
         return cat(new[] { freqs_cis_x, freqs_cis_y }, dim: -1);
     }
@@ -169,20 +169,18 @@ public class Sam3ApplyRotaryEnc : Module
 
         var freqs_cis_view = freqs_cis.view(shape);
 
-        // Reshape for complex multiplication
-        var xq_ = xq.to(ScalarType.Float32).reshape(new long[] { xq.size(0), xq.size(1), -1, 2 });
+        var xq_ = xq.to(ScalarType.Float32).reshape(new long[] { xq.size(0), xq.size(1), -1L, 2L });
         var xq_complex = view_as_complex(xq_);
         var xq_out = view_as_real(xq_complex * freqs_cis_view).flatten(ndim - 2).to(xq.dtype);
 
-        if (xk.size(ndim - 2) == 0)
+        if (xk.size((int)(ndim - 2)) == 0L)
             return Tuple.Create(xq_out, xk);
 
-        var xk_ = xk.to(ScalarType.Float32).reshape(new long[] { xk.size(0), xk.size(1), -1, 2 });
+        var xk_ = xk.to(ScalarType.Float32).reshape(new long[] { xk.size(0), xk.size(1), -1L, 2L });
         var xk_complex = view_as_complex(xk_);
 
-        // Repeat freqs along seq_len dim to match k seq_len
         var r = xk_complex.size(-2) / xq_complex.size(-2);
-        var repeat_shape = new long[freqs_cis_view.dims.Length];
+        var repeat_shape = new long[freqs_cis_view.dim()];
         for (int i = 0; i < repeat_shape.Length; i++)
             repeat_shape[i] = i >= repeat_shape.Length - 2 ? freqs_cis_view.size(i) : 1;
         var freqs_cis_repeat = freqs_cis_view.reshape(repeat_shape).repeat(
@@ -194,8 +192,7 @@ public class Sam3ApplyRotaryEnc : Module
 }
 
 /// <summary>
-/// Window partition for swin-like attention.
-/// Ported from sam3/model/vitdet.py
+/// Window partition.
 /// </summary>
 public class Sam3WindowPartition : Module
 {
@@ -232,7 +229,6 @@ public class Sam3WindowPartition : Module
 
 /// <summary>
 /// Window unpartition.
-/// Ported from sam3/model/vitdet.py
 /// </summary>
 public class Sam3WindowUnpartition : Module
 {
@@ -269,7 +265,6 @@ public class Sam3WindowUnpartition : Module
 
 /// <summary>
 /// Attention module with RoPE support.
-/// Ported from sam3/model/vitdet.py
 /// </summary>
 public class Sam3Attention : Module
 {
@@ -335,7 +330,6 @@ public class Sam3Attention : Module
 
 /// <summary>
 /// Basic ViT Block with residual connection.
-/// Ported from sam3/model/vitdet.py
 /// </summary>
 public class Sam3Block : Module
 {
@@ -378,7 +372,6 @@ public class Sam3Block : Module
 
 /// <summary>
 /// Patch embedding for ViT.
-/// Ported from sam3/model/vitdet.py
 /// </summary>
 public class Sam3PatchEmbed : Module
 {
@@ -402,7 +395,7 @@ public class Sam3PatchEmbed : Module
         var C = x.size(1);
         var H = x.size(2);
         var W = x.size(3);
-        x = x.flatten(2).transpose(1, 2);
+        x = flatten(x, start_dim: 2).transpose(1, 2);
         x = norm.forward(x);
         return Tuple.Create(x, Tuple.Create(H, W));
     }
@@ -410,8 +403,6 @@ public class Sam3PatchEmbed : Module
 
 /// <summary>
 /// ViTDet backbone for SAM3.
-/// Combines patch embedding with stacked transformer blocks.
-/// Ported from sam3/model/vitdet.py
 /// </summary>
 public class Sam3ViTDetBackbone : Module
 {
@@ -420,78 +411,122 @@ public class Sam3ViTDetBackbone : Module
     private readonly LayerNorm? norm;
     private readonly int[] stage_depths;
     private readonly int[] channel_list;
+    private readonly bool use_abs_pos;
+    private readonly bool retain_cls_token;
 
     public Sam3ViTDetBackbone(
-        int patch_size = 16,
+        int img_size = 1024,
+        int patch_size = 14,
         int in_chans = 3,
-        int embed_dim = 768,
-        int depth = 12,
-        int num_heads = 12,
-        float mlp_ratio = 4.0f,
-        float drop = 0.0f,
-        float attn_drop = 0.0f,
-        bool use_rope = false)
+        int embed_dim = 1024,
+        int depth = 48,
+        int num_heads = 16,
+        float mlp_ratio = 8.0f,
+        float drop_path_rate = 0.0f,
+        bool use_rope = false,
+        bool use_act_checkpoint = true,
+        int pretrain_img_size = 1024,
+        bool use_abs_pos = true,
+        bool retain_cls_token = false,
+        float init_values = 0.0f)
         : base(nameof(Sam3ViTDetBackbone))
     {
+        this.use_abs_pos = use_abs_pos;
+        this.retain_cls_token = retain_cls_token;
+
         patch_embed = new Sam3PatchEmbed(patch_size, in_chans, embed_dim);
         blocks = new List<Sam3Block>();
 
         Sam3ApplyRotaryEnc? rope_module = null;
         if (use_rope)
         {
-            var cis = new Sam3ComputeAxialCis(embed_dim / num_heads, patch_size, patch_size);
+            var cis = new Sam3ComputeAxialCis(embed_dim / num_heads, img_size / patch_size, img_size / patch_size);
             rope_module = new Sam3ApplyRotaryEnc(cis.get_freqs_cis());
         }
 
+        var dpr = new float[depth];
+        for (int i = 0; i < depth; i++)
+            dpr[i] = drop_path_rate * i / Math.Max(depth - 1, 1);
+
         for (int i = 0; i < depth; i++)
         {
-            var block_drop = drop * i / Math.Max(depth - 1, 1);
             var block = new Sam3Block(
                 dim: embed_dim,
                 num_heads: num_heads,
                 mlp_ratio: mlp_ratio,
-                attn_drop: attn_drop,
-                proj_drop: attn_drop,
-                drop: block_drop,
+                attn_drop: dpr[i],
+                proj_drop: dpr[i],
+                drop: dpr[i],
                 rope: rope_module);
             blocks.Add(block);
         }
 
         norm = LayerNorm(embed_dim);
 
-        // Define stage depths (typical ViTDet: [3, 3, 9, 3] for 4 stages)
         stage_depths = new int[] { 3, 3, 9, 3 };
         channel_list = new int[] { embed_dim, embed_dim, embed_dim, embed_dim };
+
+        if (use_abs_pos)
+        {
+            var num_patches = (pretrain_img_size / patch_size) * (pretrain_img_size / patch_size);
+            var num_positions = retain_cls_token ? num_patches + 1 : num_patches;
+            register_buffer("pos_embed", torch.zeros(new long[] { 1, num_positions, embed_dim }));
+            if (retain_cls_token)
+            {
+                var scale = Math.Pow(embed_dim, -0.5);
+                register_buffer("class_embedding", torch.randn(new long[] { 1, 1, embed_dim }) * scale);
+            }
+        }
     }
 
     public int[] GetChannelList() => channel_list;
 
     public Tensor forward(Tensor x)
     {
-        var patchResult = patch_embed.forward(x); var x_embed = patchResult.Item1; var spatial_shape = patchResult.Item2;
-        var B = x_embed.size(0); var N = x_embed.size(1); var C = x_embed.size(2);
+        var patchResult = patch_embed.forward(x);
+        var x_embed = patchResult.Item1;
+        var spatial_shape = patchResult.Item2;
+        var B = x_embed.size(0);
+        var C = x_embed.size(2);
+        var h = (int)spatial_shape.Item1;
+        var w = (int)spatial_shape.Item2;
 
-        // Register pos_embed buffer
-        var pos_embed = torch.zeros(new long[] { 1, N, C }, device: x_embed.device);
-        RegisterBuffer("pos_embed", pos_embed);
+        long s = 0;
+        if (retain_cls_token && use_abs_pos)
+        {
+            var cls_emb = get_buffer("class_embedding")!.to(x_embed.device);
+            x_embed = cat(new[] { cls_emb.expand(B, -1, -1), x_embed }, dim: 1);
+            s = 1;
+        }
 
-        var idx = 0;
+        if (use_abs_pos)
+        {
+            var pos_embed = get_buffer("pos_embed");
+            if (pos_embed is not null && pos_embed.numel() > 0)
+            {
+                x_embed = x_embed + pos_embed.to(x_embed.device);
+            }
+        }
+
         Tensor last_feat = null!;
+        var idx = 0;
 
         for (int i = 0; i < blocks.Count; i++)
         {
-            x_embed = blocks[i].forward(x_embed + pos_embed);
+            x_embed = blocks[i].forward(x_embed);
 
-            // Save intermediate features at certain stages
             if (idx < stage_depths.Length && i == stage_depths.Take(idx + 1).Sum() - 1)
             {
-                last_feat = x_embed.reshape(new long[] { B, spatial_shape.Item1, spatial_shape.Item2, C })
+                var feats = x_embed;
+                if (s > 0)
+                    feats = feats.narrow(1, (int)s, feats.size(1) - (int)s);
+                last_feat = feats.reshape(new long[] { B, h, w, C })
                     .permute(new long[] { 0, 3, 1, 2 }).contiguous();
                 idx++;
             }
         }
 
-        if (norm != null && last_feat != null)
+        if (norm is not null && last_feat is not null)
             last_feat = norm.forward(last_feat.permute(new long[] { 0, 2, 3, 1 })).permute(new long[] { 0, 3, 1, 2 });
 
         return last_feat;
