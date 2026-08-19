@@ -41,23 +41,73 @@ namespace SAMTorchSharp
                 image = image.permute(new long[] { 2, 0, 1 });
             }
 
+            var h = image.size(1);
+            var w = image.size(2);
+            if (h != _resolution || w != _resolution)
+                image = AntialiasedBilinearResize(image, _resolution, _resolution);
+
             using var mean = tensor(new[] { 0.485f, 0.456f, 0.406f }, dtype: ScalarType.Float32)
                 .reshape(3, 1, 1).to(image.device);
             using var std = tensor(new[] { 0.229f, 0.224f, 0.225f }, dtype: ScalarType.Float32)
                 .reshape(3, 1, 1).to(image.device);
             image = (image - mean) / std;
 
-            var h = image.size(1);
-            var w = image.size(2);
-            if (h != _resolution || w != _resolution)
+            return image;
+        }
+
+        private static Tensor AntialiasedBilinearResize(Tensor image, long outputHeight, long outputWidth)
+        {
+            var horizontal = ResizeDimension(image, image.size(2), outputWidth, dimension: 2);
+            var vertical = ResizeDimension(horizontal, image.size(1), outputHeight, dimension: 1);
+            horizontal.Dispose();
+            return vertical;
+        }
+
+        private static Tensor ResizeDimension(Tensor input, long inputSize, long outputSize, long dimension)
+        {
+            var scale = (double)inputSize / outputSize;
+            var support = Math.Max(scale, 1.0);
+            var maxKernelSize = checked((int)Math.Ceiling(support * 2) + 1);
+            var indices = new long[checked((int)outputSize * maxKernelSize)];
+            var weights = new float[indices.Length];
+
+            for (var outputIndex = 0; outputIndex < outputSize; outputIndex++)
             {
-                image = interpolate(image.unsqueeze(0),
-                    size: new long[] { _resolution, _resolution },
-                    mode: InterpolationMode.Bilinear, align_corners: false);
-                image = image.squeeze(0);
+                var center = (outputIndex + 0.5) * scale - 0.5;
+                var first = (long)Math.Floor(center - support) + 1;
+                var last = (long)Math.Ceiling(center + support);
+                double weightSum = 0;
+                var offset = checked((int)outputIndex * maxKernelSize);
+                var kernelIndex = 0;
+                for (var sourceIndex = first; sourceIndex < last; sourceIndex++)
+                {
+                    if (sourceIndex < 0 || sourceIndex >= inputSize)
+                        continue;
+                    var weight = Math.Max(0, 1 - Math.Abs(sourceIndex - center) / support);
+                    indices[offset + kernelIndex] = sourceIndex;
+                    weights[offset + kernelIndex] = (float)weight;
+                    weightSum += weight;
+                    kernelIndex++;
+                }
+                for (var weightIndex = 0; weightIndex < maxKernelSize; weightIndex++)
+                    weights[offset + weightIndex] = (float)(weights[offset + weightIndex] / weightSum);
             }
 
-            return image;
+            using var indexTensor = tensor(indices, dtype: ScalarType.Int64, device: input.device);
+            using var weightTensor = tensor(weights, dtype: ScalarType.Float32, device: input.device);
+            using var gathered = input.index_select(dimension, indexTensor);
+            if (dimension == 2)
+            {
+                using var shaped = gathered.reshape(input.size(0), input.size(1), outputSize, maxKernelSize);
+                using var shapedWeights = weightTensor.reshape(1, 1, outputSize, maxKernelSize);
+                return (shaped * shapedWeights).sum(3);
+            }
+            else
+            {
+                using var shaped = gathered.reshape(input.size(0), outputSize, maxKernelSize, input.size(2));
+                using var shapedWeights = weightTensor.reshape(1, outputSize, maxKernelSize, 1);
+                return (shaped * shapedWeights).sum(2);
+            }
         }
 
         public Tensor TransformCoordinates(Tensor coordinates, long originalHeight, long originalWidth)
