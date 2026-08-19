@@ -28,17 +28,28 @@ namespace SAMTorchSharp
         }
 
         /// <summary>
-        /// Transform an np.ndarray image (HWC, uint8, RGB) to a Tensor [3, resolution, resolution].
+        /// Transform an RGB image in HWC (preferred) or CHW layout to a float32
+        /// Tensor with shape [3, resolution, resolution]. Byte inputs are scaled to [0,1].
         /// </summary>
         public Tensor __call(Tensor image)
         {
+            if (image.dim() != 3)
+                throw new ArgumentException("image must be a 3D RGB tensor in HWC or CHW layout.", nameof(image));
+
             if (image.dtype == ScalarType.Byte)
                 image = image.to(ScalarType.Float32) / 255.0f;
+            else if (image.dtype != ScalarType.Float32)
+                image = image.to(ScalarType.Float32);
 
-            if (image.dim() == 3 && image.size(0) != 3)
+            // HWC is the documented public contract and therefore wins for the
+            // ambiguous [3, W, 3] case. CHW remains supported for compatibility.
+            if (image.size(2) == 3)
             {
-                // HWC to CHW
                 image = image.permute(new long[] { 2, 0, 1 });
+            }
+            else if (image.size(0) != 3)
+            {
+                throw new ArgumentException("image must have exactly 3 RGB channels in HWC or CHW layout.", nameof(image));
             }
 
             var h = image.size(1);
@@ -177,36 +188,30 @@ namespace SAMTorchSharp
             ResetPredictor();
 
             long h, w;
-            if (image.dim() == 3 && image.size(0) == 3)
+            if (image.dim() != 3)
             {
-                // CHW format
-                h = image.size(1);
-                w = image.size(2);
+                throw new ArgumentException("Image must be a 3D RGB tensor in [H,W,3] or [3,H,W] layout.", nameof(image));
             }
-            else if (image.dim() == 3)
+
+            // HWC is the preferred public contract and wins for [3,W,3].
+            if (image.size(2) == 3)
             {
-                // HWC format
                 h = image.size(0);
                 w = image.size(1);
             }
+            else if (image.size(0) == 3)
+            {
+                h = image.size(1);
+                w = image.size(2);
+            }
             else
             {
-                throw new ArgumentException("Image must be 3D tensor [H,W,3] or [3,H,W]");
+                throw new ArgumentException("Image must have exactly 3 RGB channels in [H,W,3] or [3,H,W] layout.", nameof(image));
             }
+
             _origHw = new long[] { h, w };
 
-            // Ensure HWC format for transform
-            Tensor inputImage;
-            if (image.size(0) == 3)
-            {
-                inputImage = image.permute(new long[] { 1, 2, 0 });
-            }
-            else
-            {
-                inputImage = image;
-            }
-
-            inputImage = _transforms.__call(inputImage);
+            var inputImage = _transforms.__call(image);
             inputImage = inputImage.unsqueeze(0).to(_device);
 
             var backboneOut = _model.ForwardImage(inputImage);
@@ -343,6 +348,7 @@ namespace SAMTorchSharp
 
         public void Dispose()
         {
+            ResetPredictor();
             _model.Dispose();
         }
     }
