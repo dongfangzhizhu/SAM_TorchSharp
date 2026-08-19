@@ -1,6 +1,5 @@
 using SAMTorchSharp.Modeling.Sam2;
 using TorchSharp;
-using TorchSharp.PyBridge;
 
 namespace SAMTorchSharp
 {
@@ -12,30 +11,16 @@ namespace SAMTorchSharp
     public static class BuildSam2
     {
         public static Sam2Base BuildSam2HieraTiny(string? checkpoint = null, int imageSize = 1024)
-        {
-            return _BuildSam2(
-                embedDim: 96,
-                numHeads: 1,
-                stages: new[] { 1, 2, 7, 2 },
-                globalAttBlocks: new[] { 5, 7, 9 },
-                windowSpec: new[] { 8, 4, 14, 7 },
-                backboneChannelList: new long[] { 768, 384, 192, 96 },
-                imageSize: imageSize,
-                checkpoint: checkpoint);
-        }
+            => BuildRegistered(Sam2ModelVariant.Sam21Tiny, checkpoint, imageSize);
 
         public static Sam2Base BuildSam2HieraSmall(string? checkpoint = null, int imageSize = 1024)
-        {
-            return _BuildSam2(
-                embedDim: 96,
-                numHeads: 1,
-                stages: new[] { 1, 2, 11, 2 },
-                globalAttBlocks: new[] { 7, 10, 13 },
-                windowSpec: new[] { 8, 4, 14, 7 },
-                backboneChannelList: new long[] { 768, 384, 192, 96 },
-                imageSize: imageSize,
-                checkpoint: checkpoint);
-        }
+            => BuildRegistered(Sam2ModelVariant.Sam21Small, checkpoint, imageSize);
+
+        public static Sam2Base BuildSam2Tiny(string? checkpoint = null, int imageSize = 1024)
+            => BuildRegistered(Sam2ModelVariant.Sam2Tiny, checkpoint, imageSize);
+
+        public static Sam2Base BuildSam2Small(string? checkpoint = null, int imageSize = 1024)
+            => BuildRegistered(Sam2ModelVariant.Sam2Small, checkpoint, imageSize);
 
         public static Sam2Base BuildSam2HieraBasePlus(string? checkpoint = null, int imageSize = 1024)
         {
@@ -63,21 +48,34 @@ namespace SAMTorchSharp
                 checkpoint: checkpoint);
         }
 
-        private static readonly Dictionary<string, Func<string?, int, Sam2Base>> Sam2ModelRegistry = new()
+        private static readonly Dictionary<string, Func<string?, int, Sam2Base>> Builders = new(StringComparer.OrdinalIgnoreCase)
         {
             { "tiny", (ckpt, size) => BuildSam2HieraTiny(ckpt, size) },
             { "small", (ckpt, size) => BuildSam2HieraSmall(ckpt, size) },
+            { "sam2-tiny", (ckpt, size) => BuildSam2Tiny(ckpt, size) },
+            { "sam2-small", (ckpt, size) => BuildSam2Small(ckpt, size) },
+            { "sam2.1-tiny", (ckpt, size) => BuildSam2HieraTiny(ckpt, size) },
+            { "sam2.1-small", (ckpt, size) => BuildSam2HieraSmall(ckpt, size) },
             { "base_plus", (ckpt, size) => BuildSam2HieraBasePlus(ckpt, size) },
             { "large", (ckpt, size) => BuildSam2HieraLarge(ckpt, size) },
         };
 
         public static Sam2Base Build(string modelType, string? checkpoint = null, int imageSize = 1024)
         {
-            if (Sam2ModelRegistry.TryGetValue(modelType, out var builder))
+            if (Builders.TryGetValue(modelType, out var builder))
             {
                 return builder(checkpoint, imageSize);
             }
             throw new ArgumentException($"Invalid SAM2 model type: {modelType}");
+        }
+
+        private static Sam2Base BuildRegistered(Sam2ModelVariant variant, string? checkpoint, int imageSize)
+        {
+            var options = Sam2ModelRegistry.Get(variant) with { ImageSize = imageSize };
+            var model = Sam2ModelBuilder.Build(options);
+            if (!string.IsNullOrWhiteSpace(checkpoint))
+                Sam2CheckpointLoader.Load(model, checkpoint, strict: true);
+            return model;
         }
 
         private static Sam2Base _BuildSam2(
@@ -184,11 +182,11 @@ namespace SAMTorchSharp
                 string ext = Path.GetExtension(checkpoint);
                 if (ext.Equals(".pth", StringComparison.InvariantCultureIgnoreCase) || ext.Equals(".pt", StringComparison.InvariantCultureIgnoreCase))
                 {
-                    model.load_py(checkpoint, strict: true);
+                    throw new NotSupportedException("Legacy base_plus/large .pt loading is not supported. Use a safetensors state dictionary.");
                 }
                 else if (ext.Equals(".safetensors", StringComparison.InvariantCultureIgnoreCase))
                 {
-                    model.load_safetensors(checkpoint, strict: true);
+                    Sam2CheckpointLoader.Load(model, checkpoint, strict: true);
                 }
             }
 
