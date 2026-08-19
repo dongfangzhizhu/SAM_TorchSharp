@@ -30,6 +30,7 @@ internal static class Program
                 "info" => RunInfo(options),
                 "compare" => RunCompare(options),
                 "sam2-checkpoint" => RunSam2Checkpoint(options),
+                "sam2-image" => RunSam2Image(options),
                 "sam3-run" => RunSam3(options),
                 "self-test" => RunSelfTest(options),
                 _ => Fail($"Unknown command '{args[0]}'. Run with --help for usage.", UsageError),
@@ -189,6 +190,31 @@ internal static class Program
         return report.IsComplete ? 0 : ValidationError;
     }
 
+    private static int RunSam2Image(CliOptions options)
+    {
+        var checkpointPath = options.RequirePath("checkpoint");
+        var variantName = options.Get("variant") ?? throw new CliException("Missing required option '--variant'.");
+        var imagePath = options.RequirePath("image");
+        var pointsPath = options.GetOptionalPath("points");
+        var labelsPath = options.GetOptionalPath("labels");
+        var boxPath = options.GetOptionalPath("box");
+        var maskInputPath = options.GetOptionalPath("mask-input");
+        var outputDirectory = Path.GetFullPath(options.Get("output") ?? Path.Combine(Environment.CurrentDirectory, "sam2-image-output"));
+        var deviceName = (options.Get("device") ?? "cpu").ToLowerInvariant();
+        var multimask = options.GetBool("multimask", true);
+        var returnLogits = options.GetBool("return-logits", false);
+        options.EnsureNoUnused();
+
+        if (deviceName != "cpu")
+            throw new CliException("Only --device cpu is supported by the configured libtorch-cpu-win-x64 runtime.");
+
+        var variant = Sam2ImageCommand.ParseVariant(variantName);
+        var inputs = Sam2ImageCommand.LoadInputs(imagePath, pointsPath, labelsPath, boxPath, maskInputPath);
+        return Sam2ImageCommand.Run(
+            variant, variantName.ToLowerInvariant(), checkpointPath, outputDirectory,
+            inputs, multimask, returnLogits);
+    }
+
     private static int RunSelfTest(CliOptions options)
     {
         options.EnsureNoUnused();
@@ -246,12 +272,24 @@ internal static class Program
               ConsistencyTest self-test
               ConsistencyTest compare --expected <file.npy> --actual <file.npy> [--atol 1e-5] [--rtol 1e-4]
               ConsistencyTest sam2-checkpoint --variant <name> --checkpoint <model.pt|model.safetensors> [options]
+              ConsistencyTest sam2-image --variant <name> --checkpoint <model.pt|model.safetensors> --image <image.npy> [prompts] [options]
               ConsistencyTest sam3-run --checkpoint <model.safetensors|model.bin> [options]
 
             sam2-checkpoint options:
               --variant <name>          sam2-tiny, sam2-small, sam2.1-tiny, or sam2.1-small
               --output <file.json>      Loading report (default: ./sam2-checkpoint-summary.json)
               --strict <true|false>     Require zero missing/unexpected/mismatched keys (default: true)
+
+            sam2-image prompts and options:
+              --image <file.npy>        Required float32 HWC [H,W,3] RGB image in the [0,1] range
+              --points <file.npy>       Optional float32 [N,2] original-pixel (x,y) coordinates
+              --labels <file.npy>       Required with --points: float32 [N], values 0 or 1
+              --box <file.npy>          Optional float32 [4] or [2,2] x0,y0,x1,y1 box
+              --mask-input <file.npy>   Optional float32 [1,256,256] logits for refinement
+              --output <directory>      masks.npy, scores.npy, low_res_logits.npy, summary.json
+              --device cpu              Execution device; CPU is currently the only supported runtime
+              --multimask <true|false>  Return three candidate masks instead of one (default: true)
+              --return-logits <bool>    Return full-resolution logits instead of binary masks (default: false)
 
             sam3-run options:
               --output <directory>       Output directory (default: ./sam3-output)
@@ -302,6 +340,16 @@ internal sealed class CliOptions
         var value = Get(name);
         if (string.IsNullOrWhiteSpace(value))
             throw new CliException($"Missing required option '--{name}'.");
+        var path = Path.GetFullPath(value);
+        if (!File.Exists(path))
+            throw new CliException($"File supplied to '--{name}' does not exist: {path}");
+        return path;
+    }
+
+    public string? GetOptionalPath(string name)
+    {
+        var value = Get(name);
+        if (value is null) return null;
         var path = Path.GetFullPath(value);
         if (!File.Exists(path))
             throw new CliException($"File supplied to '--{name}' does not exist: {path}");

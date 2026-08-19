@@ -16,5 +16,6 @@
     <Compile Include="NpyFile.cs" />
     <Compile Include="NumericComparison.cs" />
     <Compile Include="Program.cs" />
+    <Compile Include="Sam2ImageCommand.cs" />
   </ItemGroup>
 </Project>

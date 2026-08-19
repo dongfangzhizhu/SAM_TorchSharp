@@ -47,6 +47,30 @@ dotnet run --project .\ConsistencyTest.csproj -- sam2-checkpoint `
 Supported variants are `sam2-tiny`, `sam2-small`, `sam2.1-tiny`, and `sam2.1-small`.
 The JSON report records loaded, missing, unexpected, and shape-mismatched tensors without invoking Python.
 
+## Run SAM2 image inference
+
+```powershell
+dotnet run --project .\ConsistencyTest.csproj -- sam2-image `
+  --variant sam2.1-tiny `
+  --checkpoint ..\..\checkpoints\sam2.1_hiera_tiny.pt `
+  --image .\image.npy `
+  --points .\points.npy `
+  --labels .\labels.npy `
+  --output .\sam2-image-output `
+  --multimask true
+```
+
+`image.npy` must be a C-order float32 RGB array with shape `[H,W,3]` and values in `[0,1]`.
+Point coordinates use original-image pixels in `(x,y)` order. `points.npy` has shape `[N,2]` and
+`labels.npy` has shape `[N]`, with `0` for negative and `1` for positive points. A box can be supplied
+instead of or together with points through `--box`; its shape is `[4]` or `[2,2]` in
+`x0,y0,x1,y1` order. For iterative refinement, `--mask-input` accepts one previous low-resolution
+logit mask with shape `[1,256,256]`.
+
+The command writes `masks.npy`, `scores.npy`, `low_res_logits.npy`, and `summary.json`. Masks are
+float32 binary arrays by default; use `--return-logits true` for full-resolution mask logits. The
+low-resolution logits are always clamped to `[-32,32]` and can be used for refinement.
+
 ## Run the SAM3 detector prototype
 
 ```powershell

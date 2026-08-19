@@ -23,4 +23,23 @@ public sealed class CliOptionsTests
 
         Assert.Contains("must be true or false", error.Message);
     }
+
+    [Fact]
+    public void OptionalPathReturnsNullWhenOmitted()
+    {
+        var options = CliOptions.Parse([]);
+
+        Assert.Null(options.GetOptionalPath("points"));
+        options.EnsureNoUnused();
+    }
+
+    [Fact]
+    public void OptionalPathRejectsMissingFile()
+    {
+        var options = CliOptions.Parse(["--points", Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.npy")]);
+
+        var error = Assert.Throws<CliException>(() => options.GetOptionalPath("points"));
+
+        Assert.Contains("does not exist", error.Message);
+    }
 }
