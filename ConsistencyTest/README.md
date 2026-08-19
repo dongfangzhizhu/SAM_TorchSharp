@@ -10,6 +10,16 @@ dotnet run --project .\ConsistencyTest.csproj -- self-test
 dotnet run --project .\ConsistencyTest.csproj -- info
 ```
 
+## Automated tests
+
+From the repository root:
+
+```powershell
+dotnet test .\tests\ConsistencyTest.Tests\ConsistencyTest.Tests.csproj -c Release
+```
+
+The test suite covers NPY v1/v2/v3 parsing, float32 round trips, malformed headers and payloads, shape validation, numerical tolerances, and non-finite values.
+
 ## Compare NPY outputs
 
 Only little-endian, C-order float32 NPY v1/v2/v3 arrays are accepted.

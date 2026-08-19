@@ -15,6 +15,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SafetensorsCompare", "tools
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Sam2VectorRunner", "tools\Sam2VectorRunner\Sam2VectorRunner.csproj", "{943EB4F6-A879-4D41-A2D0-E221591C7E03}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{0AB3BF05-4346-4AA6-1389-037BE0695223}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ConsistencyTest.Tests", "tests\ConsistencyTest.Tests\ConsistencyTest.Tests.csproj", "{0419CA56-232E-458C-A65C-42005A01784B}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -107,6 +111,22 @@ Global
 		{943EB4F6-A879-4D41-A2D0-E221591C7E03}.Release|x64.Build.0 = Release|Any CPU
 		{943EB4F6-A879-4D41-A2D0-E221591C7E03}.Release|x86.ActiveCfg = Release|Any CPU
 		{943EB4F6-A879-4D41-A2D0-E221591C7E03}.Release|x86.Build.0 = Release|Any CPU
+		{0419CA56-232E-458C-A65C-42005A01784B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0419CA56-232E-458C-A65C-42005A01784B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0419CA56-232E-458C-A65C-42005A01784B}.Debug|arm64.ActiveCfg = Debug|Any CPU
+		{0419CA56-232E-458C-A65C-42005A01784B}.Debug|arm64.Build.0 = Debug|Any CPU
+		{0419CA56-232E-458C-A65C-42005A01784B}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{0419CA56-232E-458C-A65C-42005A01784B}.Debug|x64.Build.0 = Debug|Any CPU
+		{0419CA56-232E-458C-A65C-42005A01784B}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{0419CA56-232E-458C-A65C-42005A01784B}.Debug|x86.Build.0 = Debug|Any CPU
+		{0419CA56-232E-458C-A65C-42005A01784B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0419CA56-232E-458C-A65C-42005A01784B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0419CA56-232E-458C-A65C-42005A01784B}.Release|arm64.ActiveCfg = Release|Any CPU
+		{0419CA56-232E-458C-A65C-42005A01784B}.Release|arm64.Build.0 = Release|Any CPU
+		{0419CA56-232E-458C-A65C-42005A01784B}.Release|x64.ActiveCfg = Release|Any CPU
+		{0419CA56-232E-458C-A65C-42005A01784B}.Release|x64.Build.0 = Release|Any CPU
+		{0419CA56-232E-458C-A65C-42005A01784B}.Release|x86.ActiveCfg = Release|Any CPU
+		{0419CA56-232E-458C-A65C-42005A01784B}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -114,6 +134,7 @@ Global
 	GlobalSection(NestedProjects) = preSolution
 		{4D500121-DED2-47E7-9064-1E49760F9E2C} = {07C2787E-EAC7-C090-1BA3-A61EC2A24D84}
 		{943EB4F6-A879-4D41-A2D0-E221591C7E03} = {07C2787E-EAC7-C090-1BA3-A61EC2A24D84}
+		{0419CA56-232E-458C-A65C-42005A01784B} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {FD867C33-70B9-4C08-BFC9-2D1DD8A6FDEC}
