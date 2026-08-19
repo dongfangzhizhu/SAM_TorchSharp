@@ -6,30 +6,31 @@ using static TorchSharp.torch;
 using static TorchSharp.torch.nn;
 using System;
 using System.Collections.Generic;
-using System.Linq;
 
 namespace SAMTorchSharp.Modeling.Sam3;
 
 /// <summary>
-/// Generic MLP helper (2-layer).
+/// MLP helper for transformer layers.
 /// </summary>
-public class Sam3MLP : Module
+public class Sam3MLP : Module<Tensor, Tensor>
 {
     private readonly Linear linear1;
     private readonly Linear linear2;
     private readonly Module<Tensor, Tensor> activation;
     private readonly Dropout dropout;
 
-    public Sam3MLP(int in_dim, int hidden_dim, int out_dim, int num_layers = 3, bool sigmoid_output = false)
+    public Sam3MLP(int inFeatures, int hiddenFeatures, int outFeatures, int numLayers = 2, bool sigmoid_output = true, string activationType = "gelu", float dropoutRate = 0.1f)
         : base(nameof(Sam3MLP))
     {
-        activation = sigmoid_output ? Sigmoid() : GELU();
-        linear1 = Linear(in_dim, hidden_dim);
-        linear2 = Linear(hidden_dim, out_dim);
-        dropout = Dropout(0.1f);
+        linear1 = Linear(inFeatures, hiddenFeatures);
+        linear2 = Linear(hiddenFeatures, outFeatures);
+        activation = activationType.ToLower() == "relu" ? ReLU() : GELU();
+        dropout = Dropout(dropoutRate);
+
+        RegisterComponents();
     }
 
-    public Tensor forward(Tensor x)
+    public override Tensor forward(Tensor x)
     {
         x = linear2.forward(dropout.forward(activation.forward(linear1.forward(x))));
         return x;
@@ -37,159 +38,173 @@ public class Sam3MLP : Module
 }
 
 /// <summary>
-/// Transformer encoder layer for SAM3.
+/// Transformer encoder layer for SAM3 with SEPARATE Q/K/V projections.
+/// Matches: detector_model.detr_encoder.layers.{N}
+/// Architecture: d_model=256, nhead=8, MLP hidden=2048
+///
+/// Checkpoint keys per layer:
+///   self_attn.q_proj/k_proj/v_proj/o_proj (8 params)
+///   cross_attn.q_proj/k_proj/v_proj/o_proj (8 params)
+///   layer_norm1/2/3 (6 params)
+///   mlp.fc1/fc2 (4 params)
 /// </summary>
 public class Sam3TransformerEncoderLayer : Module
 {
-    private readonly MultiheadAttention self_attn;
-    private readonly MultiheadAttention cross_attn_image;
+    private readonly Linear self_attn_q_proj;
+    private readonly Linear self_attn_k_proj;
+    private readonly Linear self_attn_v_proj;
+    private readonly Linear self_attn_o_proj;
+
+    private readonly Linear cross_attn_q_proj;
+    private readonly Linear cross_attn_k_proj;
+    private readonly Linear cross_attn_v_proj;
+    private readonly Linear cross_attn_o_proj;
+
     private readonly Linear linear1;
     private readonly Linear linear2;
     private readonly Module<Tensor, Tensor> activation;
     private readonly float dropout;
+
     private readonly LayerNorm norm1;
     private readonly LayerNorm norm2;
     private readonly LayerNorm norm3;
-    private readonly bool pre_norm;
-    private readonly bool pos_enc_at_attn;
-    private readonly bool pos_enc_at_cross_attn_queries;
-    private readonly bool pos_enc_at_cross_attn_keys;
+
     private readonly int d_model;
+    private readonly int nhead;
     private readonly int dim_feedforward;
+    private readonly int head_dim;
+    private readonly float attn_scale;
 
     public Sam3TransformerEncoderLayer(
         int d_model = 256,
         int nhead = 8,
         int dim_feedforward = 2048,
         float dropout = 0.1f,
-        string activation_type = "gelu",
-        bool pre_norm = true,
-        bool pos_enc_at_attn = false,
-        bool pos_enc_at_cross_attn_queries = false,
-        bool pos_enc_at_cross_attn_keys = false)
+        string activation_type = "gelu")
         : base(nameof(Sam3TransformerEncoderLayer))
     {
         this.d_model = d_model;
+        this.nhead = nhead;
         this.dim_feedforward = dim_feedforward;
-        this.pre_norm = pre_norm;
-        this.pos_enc_at_attn = pos_enc_at_attn;
-        this.pos_enc_at_cross_attn_queries = pos_enc_at_cross_attn_queries;
-        this.pos_enc_at_cross_attn_keys = pos_enc_at_cross_attn_keys;
+        this.head_dim = d_model / nhead;
+        this.attn_scale = 1.0f / (float)Math.Sqrt(head_dim);
+        this.dropout = dropout;
 
-        self_attn = MultiheadAttention(d_model, nhead, dropout: dropout);
-        cross_attn_image = MultiheadAttention(d_model, nhead, dropout: dropout);
+        self_attn_q_proj = Linear(d_model, d_model);
+        self_attn_k_proj = Linear(d_model, d_model);
+        self_attn_v_proj = Linear(d_model, d_model);
+        self_attn_o_proj = Linear(d_model, d_model);
+
+        cross_attn_q_proj = Linear(d_model, d_model);
+        cross_attn_k_proj = Linear(d_model, d_model);
+        cross_attn_v_proj = Linear(d_model, d_model);
+        cross_attn_o_proj = Linear(d_model, d_model);
 
         linear1 = Linear(d_model, dim_feedforward);
         linear2 = Linear(dim_feedforward, d_model);
         activation = activation_type.ToLower() == "relu" ? ReLU() : GELU();
 
-        this.dropout = dropout;
-
         norm1 = LayerNorm(d_model);
         norm2 = LayerNorm(d_model);
         norm3 = LayerNorm(d_model);
+
+        RegisterComponents();
+    }
+
+    private Tensor dot_product_attention(Tensor q, Tensor k, Tensor v)
+    {
+        // q, k, v: [seq, batch, d_model]
+        var seq = q.size(0);
+        var B = q.size(1);
+
+        var q_h = q.reshape(new long[] { seq, B, nhead, head_dim }).transpose(0, 1);
+        var k_h = k.reshape(new long[] { seq, B, nhead, head_dim }).transpose(0, 1);
+        var v_h = v.reshape(new long[] { seq, B, nhead, head_dim }).transpose(0, 1);
+
+        var k_h_t = k_h.transpose(2, 3);
+        var attn = (q_h * attn_scale).matmul(k_h_t);
+        attn = functional.softmax(attn, dim: 3);
+        var attn_out = attn.matmul(v_h);
+
+        attn_out = attn_out.transpose(0, 1).reshape(new long[] { seq, B, d_model });
+        return attn_out;
+    }
+
+    public Dictionary<string, object> forward(
+        Tensor tgt,
+        Tensor memory,
+        Tensor? tgt_key_padding_mask = null,
+        Tensor? memory_key_padding_mask = null,
+        Tensor? pos = null,
+        Tensor? query_pos = null,
+        Tensor? tgt_mask = null,
+        Tensor? memory_mask = null)
+    {
+        return forward_post(tgt, memory, tgt_key_padding_mask, memory_key_padding_mask, pos, query_pos, tgt_mask, memory_mask);
+    }
+
+    private Dictionary<string, object> forward_post(
+        Tensor tgt,
+        Tensor memory,
+        Tensor? tgt_key_padding_mask,
+        Tensor? memory_key_padding_mask,
+        Tensor? pos,
+        Tensor? query_pos,
+        Tensor? tgt_mask,
+        Tensor? memory_mask)
+    {
+        // Self-attention
+        var q_tgt = WithPosEmbed(tgt, pos);
+        var k_tgt = WithPosEmbed(tgt, query_pos);
+        var v_tgt = tgt;
+
+        var q_s = self_attn_q_proj.forward(q_tgt);
+        var k_s = self_attn_k_proj.forward(k_tgt);
+        var v_s = self_attn_v_proj.forward(v_tgt);
+
+        var self_out = self_attn_o_proj.forward(dot_product_attention(q_s, k_s, v_s));
+
+        var tgt2 = tgt + self_out;
+        tgt2 = norm2.forward(tgt2);
+
+        // Cross-attention (memory)
+        var q_cross = WithPosEmbed(tgt2, pos);
+        var k_cross = memory;
+        var v_cross = memory;
+
+        var q_c = cross_attn_q_proj.forward(q_cross);
+        var k_c = cross_attn_k_proj.forward(k_cross);
+        var v_c = cross_attn_v_proj.forward(v_cross);
+
+        var cross_out = cross_attn_o_proj.forward(dot_product_attention(q_c, k_c, v_c));
+
+        var tgt3 = tgt2 + cross_out;
+        tgt3 = norm1.forward(tgt3);
+
+        // FFN
+        var ffn = linear2.forward(activation.forward(linear1.forward(tgt3)));
+        var tgt4 = norm3.forward(tgt3 + ffn);
+
+        return new Dictionary<string, object>
+        {
+            { "output", tgt4 }
+        };
     }
 
     public static Tensor WithPosEmbed(Tensor tensor, Tensor? pos)
     {
         return pos is null ? tensor : tensor + pos;
     }
-
-    private Tensor dropout_tensor(Tensor x, float p)
-    {
-        if (p == 0.0f || !training)
-            return x;
-        return x * torch.rand(x.shape, device: x.device, dtype: x.dtype) / (1.0f - p);
-    }
-
-    public Tensor forward(
-        Tensor tgt,
-        Tensor memory,
-        Tensor? tgt_mask = null,
-        Tensor? memory_mask = null,
-        Tensor? tgt_key_padding_mask = null,
-        Tensor? memory_key_padding_mask = null,
-        Tensor? pos = null,
-        Tensor? query_pos = null)
-    {
-        if (pre_norm)
-        {
-            return forward_pre(tgt, memory, tgt_key_padding_mask, memory_key_padding_mask, pos, query_pos, tgt_mask, memory_mask);
-        }
-        else
-        {
-            return forward_post(tgt, memory, tgt_key_padding_mask, memory_key_padding_mask, pos, query_pos, tgt_mask, memory_mask);
-        }
-    }
-
-    private Tensor forward_post(
-        Tensor tgt,
-        Tensor memory,
-        Tensor? tgt_key_padding_mask,
-        Tensor? memory_key_padding_mask,
-        Tensor? pos,
-        Tensor? query_pos,
-        Tensor? tgt_mask = null,
-        Tensor? memory_mask = null)
-    {
-        var q = WithPosEmbed(tgt, query_pos);
-        var k = q;
-
-        var attn_out = self_attn.forward(q, k, tgt, tgt_key_padding_mask, false, tgt_mask).Item1;
-        var tgt2 = tgt + dropout_tensor(attn_out, dropout);
-        tgt2 = norm1.forward(tgt2);
-
-        var cross_q = WithPosEmbed(tgt2, query_pos);
-        var cross_k = WithPosEmbed(memory, pos);
-        var cross_out = cross_attn_image.forward(cross_q, cross_k, memory, memory_key_padding_mask, false, memory_mask).Item1;
-        var tgt3 = tgt2 + dropout_tensor(cross_out, dropout);
-        tgt3 = norm2.forward(tgt3);
-
-        var ffn = linear2.forward(dropout_tensor(activation.forward(linear1.forward(tgt3)), dropout));
-        var tgt4 = tgt3 + ffn;
-        tgt4 = norm3.forward(tgt4);
-
-        return tgt4;
-    }
-
-    private Tensor forward_pre(
-        Tensor tgt,
-        Tensor memory,
-        Tensor? tgt_key_padding_mask,
-        Tensor? memory_key_padding_mask,
-        Tensor? pos,
-        Tensor? query_pos,
-        Tensor? tgt_mask = null,
-        Tensor? memory_mask = null)
-    {
-        var normed_tgt = norm1.forward(tgt);
-        var q = WithPosEmbed(normed_tgt, query_pos);
-        var k = q;
-
-        var attn_out = self_attn.forward(q, k, normed_tgt, tgt_key_padding_mask, false, null).Item1;
-        var tgt2 = tgt + dropout_tensor(attn_out, dropout);
-
-        var normed_tgt2 = norm2.forward(tgt2);
-        var cross_q = WithPosEmbed(normed_tgt2, query_pos);
-        var cross_k = WithPosEmbed(memory, pos);
-        var cross_out = cross_attn_image.forward(cross_q, cross_k, normed_tgt2, memory_key_padding_mask, false, null).Item1;
-        var tgt3 = tgt2 + dropout_tensor(cross_out, dropout);
-
-        var normed_tgt3 = norm3.forward(tgt3);
-        var ffn = linear2.forward(dropout_tensor(activation.forward(linear1.forward(normed_tgt3)), dropout));
-        var tgt4 = tgt3 + ffn;
-
-        return tgt4;
-    }
 }
 
 /// <summary>
-/// SAM3 Transformer encoder.
+/// Transformer encoder for SAM3 DETR-style encoder.
+/// Matches: detector_model.detr_encoder
+/// Stacks multiple encoder layers and concatenates multi-scale features.
 /// </summary>
 public class Sam3TransformerEncoder : Module
 {
     private readonly List<Sam3TransformerEncoderLayer> layers;
-    private readonly int num_layers;
     private readonly int d_model;
     private readonly int num_feature_levels;
     private readonly Parameter? level_embed;
@@ -197,10 +212,9 @@ public class Sam3TransformerEncoder : Module
     public Sam3TransformerEncoder(
         int d_model = 256,
         int nhead = 8,
-        int num_layers = 1,
+        int num_layers = 6,
         int dim_feedforward = 2048,
-        int num_feature_levels = 4,
-        bool use_act_checkpoint = false)
+        int num_feature_levels = 3)
         : base(nameof(Sam3TransformerEncoder))
     {
         this.d_model = d_model;
@@ -209,19 +223,17 @@ public class Sam3TransformerEncoder : Module
         layers = new List<Sam3TransformerEncoderLayer>();
         for (int i = 0; i < num_layers; i++)
         {
-            layers.Add(new Sam3TransformerEncoderLayer(
-                d_model, nhead, dim_feedforward,
-                pre_norm: true,
-                pos_enc_at_attn: false,
-                pos_enc_at_cross_attn_queries: false,
-                pos_enc_at_cross_attn_keys: false));
+            var layer = new Sam3TransformerEncoderLayer(d_model, nhead, dim_feedforward);
+            layers.Add(layer);
+            register_module("layer_" + i.ToString(), layer);
         }
 
-        this.num_layers = num_layers;
         if (num_feature_levels > 1)
         {
             level_embed = Parameter(torch.randn(new long[] { num_feature_levels, d_model }), requires_grad: true);
         }
+
+        RegisterComponents();
     }
 
     public Dictionary<string, object> forward(
@@ -266,13 +278,16 @@ public class Sam3TransformerEncoder : Module
             lvlPosEmbedFlatten.Add(posFlat ?? srcFlat.clone());
         }
 
-        var srcConcat = cat(srcFlatten, dim: 1);
-        var lvlPosConcat = cat(lvlPosEmbedFlatten, dim: 1);
+        var srcConcat = cat(srcFlatten, dim: 1);  // [bs, total_spatial, d_model]
+        var lvlPosConcat = cat(lvlPosEmbedFlatten, dim: 1);  // [bs, total_spatial, d_model]
 
-        Tensor output = srcConcat;
+        // Transpose to seq-first format [total_spatial, bs, d_model] for decoder compatibility
+        Tensor output = srcConcat.transpose(0, 1);
+        lvlPosConcat = lvlPosConcat.transpose(0, 1);
         foreach (var layer in layers)
         {
-            output = layer.forward(output, output);
+            var result = layer.forward(output, output);
+            output = (Tensor)result["output"];
         }
 
         var levelStartIndices = new long[] { 0 };
@@ -283,12 +298,10 @@ public class Sam3TransformerEncoder : Module
 
         return new Dictionary<string, object>
         {
-            { "memory", output.transpose(0, 1) },
-            { "padding_mask", hasMask ? cat(maskFlatten.Where(m => m is not null).Cast<Tensor>().ToArray(), dim: 1).transpose(0, 1) : null },
-            { "pos_embed", lvlPosConcat.transpose(0, 1) },
-            { "level_start_index", torch.tensor(levelStartIndices) },
-            { "spatial_shapes", torch.tensor(spatialShapes.ToArray()) },
-            { "valid_ratios", torch.ones(new long[] { 1, spatialShapes.Count, 2 }, device: srcConcat.device) }
+            { "memory", output },
+            { "pos_embed", lvlPosConcat },
+            { "level_start_index", levelStartIndices },
+            { "spatial_shapes", spatialShapes }
         };
     }
 }
