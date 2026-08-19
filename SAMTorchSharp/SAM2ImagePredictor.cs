@@ -41,7 +41,11 @@ namespace SAMTorchSharp
                 image = image.permute(new long[] { 2, 0, 1 });
             }
 
-            image = (image - 0.5) / 0.5;
+            using var mean = tensor(new[] { 0.485f, 0.456f, 0.406f }, dtype: ScalarType.Float32)
+                .reshape(3, 1, 1).to(image.device);
+            using var std = tensor(new[] { 0.229f, 0.224f, 0.225f }, dtype: ScalarType.Float32)
+                .reshape(3, 1, 1).to(image.device);
+            image = (image - mean) / std;
 
             var h = image.size(1);
             var w = image.size(2);
@@ -55,6 +59,24 @@ namespace SAMTorchSharp
 
             return image;
         }
+
+        public Tensor TransformCoordinates(Tensor coordinates, long originalHeight, long originalWidth)
+        {
+            if (coordinates.size(-1) != 2)
+                throw new ArgumentException("Coordinates must have X,Y in the last dimension.", nameof(coordinates));
+            var transformed = coordinates.clone().to_type(ScalarType.Float32);
+            transformed[TensorIndex.Ellipsis, TensorIndex.Single(0)] =
+                transformed[TensorIndex.Ellipsis, TensorIndex.Single(0)] / originalWidth * _resolution;
+            transformed[TensorIndex.Ellipsis, TensorIndex.Single(1)] =
+                transformed[TensorIndex.Ellipsis, TensorIndex.Single(1)] / originalHeight * _resolution;
+            return transformed;
+        }
+
+        public Tensor PostprocessMasks(Tensor masks, long originalHeight, long originalWidth) =>
+            interpolate(masks.to_type(ScalarType.Float32),
+                size: new[] { originalHeight, originalWidth },
+                mode: InterpolationMode.Bilinear,
+                align_corners: false);
     }
 
     /// <summary>
@@ -168,8 +190,10 @@ namespace SAMTorchSharp
             Tensor? box = null,
             Tensor? maskInput = null,
             bool multimaskOutput = true,
-            bool returnLogits = false)
+            bool returnLogits = false,
+            bool normalizeCoordinates = true)
         {
+            using var noGrad = no_grad();
             if (!_isImageSet)
                 throw new InvalidOperationException("An image must be set with SetImage before prediction.");
 
@@ -182,7 +206,9 @@ namespace SAMTorchSharp
                 if (pointLabels is null)
                     throw new ArgumentException("point_labels must be supplied if point_coords is supplied.");
 
-                unnormCoords = pointCoords.to(_device);
+                unnormCoords = normalizeCoordinates
+                    ? _transforms.TransformCoordinates(pointCoords, _origHw![0], _origHw[1]).to(_device)
+                    : pointCoords.to(_device);
                 labels = pointLabels.to(_device).to(ScalarType.Int32);
 
                 if (unnormCoords.dim() == 2) unnormCoords = unnormCoords.unsqueeze(0);
@@ -191,7 +217,10 @@ namespace SAMTorchSharp
 
             if (box is not null)
             {
-                unnormBox = box.to(_device).reshape(1, 2, 2);
+                var boxCoordinates = box.reshape(-1, 2, 2);
+                unnormBox = (normalizeCoordinates
+                    ? _transforms.TransformCoordinates(boxCoordinates, _origHw![0], _origHw[1])
+                    : boxCoordinates).to(_device).reshape(1, 2, 2);
                 var boxLabels = tensor(new long[] { 2, 3 }, dtype: ScalarType.Int32, device: _device).reshape(1, 2);
                 if (unnormCoords is not null)
                 {
@@ -233,14 +262,16 @@ namespace SAMTorchSharp
                 batchedMode,
                 highResFeatures);
 
+            var fullResolutionMasks = _transforms.PostprocessMasks(
+                lowResMultimasks, _origHw![0], _origHw[1]);
             Tensor masks;
             if (returnLogits)
             {
-                masks = lowResMultimasks;
+                masks = fullResolutionMasks;
             }
             else
             {
-                masks = (lowResMultimasks > MaskThreshold).to(ScalarType.Float32);
+                masks = (fullResolutionMasks > MaskThreshold).to(ScalarType.Float32);
             }
 
             Tensor lowResMasksOut = clamp(lowResMultimasks, -32.0, 32.0);
@@ -250,6 +281,10 @@ namespace SAMTorchSharp
 
         public void ResetPredictor()
         {
+            _imageEmbedding?.Dispose();
+            if (_highResFeatures is not null)
+                foreach (var feature in _highResFeatures)
+                    feature.Dispose();
             _isImageSet = false;
             _imageEmbedding = null;
             _highResFeatures = null;
