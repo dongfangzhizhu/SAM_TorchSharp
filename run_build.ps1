@@ -1,1 +1,0 @@
-pwsh -NoProfile -Command "dotnet build 'D:/SouceCode/python2net/SAMALL/SAM_TorchSharp/SAMTorchSharp/SAMTorchSharp.csproj' > D:/SouceCode/python2net/SAMALL/SAM_TorchSharp/build_result.txt 2>&1; Get-Content D:/SouceCode/python2net/SAMALL/SAM_TorchSharp/build_result.txt"

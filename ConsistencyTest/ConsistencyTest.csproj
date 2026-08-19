@@ -17,5 +17,6 @@
     <Compile Include="NumericComparison.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Sam2ImageCommand.cs" />
+    <Compile Include="Sam3ImageCommand.cs" />
   </ItemGroup>
 </Project>

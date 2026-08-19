@@ -76,6 +76,7 @@ internal static class Program
     private static int RunSam3(CliOptions options)
     {
         var checkpointPath = options.RequirePath("checkpoint");
+        var imagePath = options.GetOptionalPath("image");
         var outputDirectory = Path.GetFullPath(options.Get("output") ?? Path.Combine(Environment.CurrentDirectory, "sam3-output"));
         var caption = options.Get("caption") ?? "a dog";
         var deviceName = (options.Get("device") ?? "cpu").ToLowerInvariant();
@@ -116,7 +117,9 @@ internal static class Program
             return Fail($"Checkpoint coverage {coverage:F2}% is below required {minCoverage:F2}%.", ValidationError);
 
         manual_seed(seed);
-        using var input = randn(new long[] { 1, 3, 1008, 1008 }, dtype: ScalarType.Float32, device: CPU);
+        using var input = imagePath is null
+            ? randn(new long[] { 1, 3, 1008, 1008 }, dtype: ScalarType.Float32, device: CPU)
+            : Sam3ImageCommand.ToTensor(Sam3ImageCommand.LoadImage(imagePath));
         var stopwatch = Stopwatch.StartNew();
         var outputs = model.Forward(input, new[] { caption }, geometricPrompt: null);
         stopwatch.Stop();
@@ -133,6 +136,8 @@ internal static class Program
             var summary = new
             {
                 checkpoint = checkpointPath,
+                image = imagePath,
+                input = imagePath is null ? "seeded-random" : "preprocessed-image",
                 device = deviceName,
                 caption,
                 seed,
@@ -292,6 +297,7 @@ internal static class Program
               --return-logits <bool>    Return full-resolution logits instead of binary masks (default: false)
 
             sam3-run options:
+              --image <file.npy>          Optional normalized float32 [1,3,1008,1008] image
               --output <directory>       Output directory (default: ./sam3-output)
               --caption <text>           Text prompt (default: "a dog")
               --device cpu               Execution device; CPU is currently the only supported runtime

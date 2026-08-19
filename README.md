@@ -1,35 +1,113 @@
 [中文](README-zh.md)
+
 # SAM_TorchSharp
 
-## Project Introduction
+SAM_TorchSharp ports Meta's Segment Anything model family to .NET 8 with [TorchSharp](https://github.com/dotnet/TorchSharp). The repository contains SAM 1 image segmentation, SAM 2 image/video components and checkpoint tooling, and an experimental SAM 3 text-conditioned detector.
 
-**SAM_TorchSharp** is a project dedicated to exploring the feasibility of artificial intelligence development using .NET Core. Built upon [TorchSharp](https://github.com/dotnet/TorchSharp) and [TorchSharp.PyBridge](https://github.com/sha/incomplete-link), this project focuses on porting the Segment-Anything (SAM) model from Python to the .NET Core ecosystem. SAM, an advanced image segmentation model, is supported in its `sam_vit_b`, `sam_vit_l`, and `sam_vit_h` variants, with successful integration of `mobileSam`. It introduces a versatile model loading mechanism that accepts weight files directly during initialization.
+> This is an independent .NET port. Model checkpoints are not included; obtain them from the official model repositories and comply with their licenses and access requirements.
 
-## Features
+## Current status
 
-- **Model Compatibility**: Enables automatic loading of pretrained models by specifying weight file paths upon initialization.
-- **Exception Handling**: Addresses issues encountered when attempting to load `sam_vit_b_01ec64.pth`, `sam_vit_h_4b8939.pth`, and `sam_vit_l_0b3195.pth` directly. As a workaround, it's advised to first save the model's state dictionary in Python using `torch.save(model.state_dict(), "sam.pth")`, which can then be seamlessly loaded within this project.
-- **.NET Core Integration**: Leverages the cross-platform capabilities of .NET Core, expanding the horizons for AI application development.
+| Model | Status | Notes |
+| --- | --- | --- |
+| SAM 1 | Supported | ViT-H, ViT-L, ViT-B, and MobileSAM/TinyViT builders; point, box, and mask prompts. |
+| SAM 2 / 2.1 | In progress and usable | Image prediction, multimask output, checkpoint validation, video/memory components, and Python/.NET parity tools. The scriptable CLI currently exposes tiny and small variants. |
+| SAM 3 | Experimental detector prototype | Accepts a text prompt and emits normalized `pred_boxes`/`pred_logits` plus intermediate features. The final pixel-level mask head is not implemented. |
 
-## Dependencies
+The configured native package is `libtorch-cpu-win-x64`, so the checked-in projects currently support CPU execution on Windows. GPU execution is not exposed by the consistency CLI.
 
-- [TorchSharp](https://github.com/dotnet/TorchSharp): A .NET binding to PyTorch, providing deep learning functionalities.
-- [TorchSharp.PyBridge](incomplete-link): An extension for bridging Python and .NET environments, facilitating model migration.
+## Requirements
 
-## Installation & Usage
+- Windows x64
+- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
+- Sufficient memory and disk space for the selected checkpoint
+- Python is optional and is only needed to generate or compare parity vectors
 
-Please refer to the `INSTALL.md` document for detailed installation instructions and environment setup guidelines. After cloning the project, ensure all dependencies are correctly installed and follow the provided instructions to set up your .NET Core environment.
+Main package versions are declared in `SAMTorchSharp/SAMTorchSharp.csproj`:
 
-## Contribution Guidelines
+- TorchSharp `0.102.6`
+- TorchVision `0.102.6`
+- TorchSharp.PyBridge `1.4.1`
+- libtorch CPU for Windows x64 `2.2.1.1`
 
-We welcome all forms of contributions, including code submissions, bug reports, and documentation improvements. Consult the `CONTRIBUTING.md` file to learn how to get started.
+## Build and test
 
-## License
+```powershell
+git clone https://github.com/dongfangzhizhu/SAM_TorchSharp.git
+cd SAM_TorchSharp
+dotnet restore .\SAM_TorchSharp.sln
+dotnet build .\SAM_TorchSharp.sln -c Release --no-restore
+dotnet test .\tests\ConsistencyTest.Tests\ConsistencyTest.Tests.csproj -c Release --no-restore
+```
 
-This project is licensed under the [MIT License](LICENSE), encouraging free use, modification, and distribution while preserving original authorship credits.
+The test project covers NPY I/O, CLI parsing, numeric comparison, SAM 2 image-input validation, and SAM 3 preprocessed-image validation. Large generated parity vectors under `testdata/` are intentionally ignored.
 
-## Acknowledgments
+## Scriptable consistency CLI
 
-Special thanks go to:
-- The [TorchSharp](https://github.com/dotnet/TorchSharp) team for providing powerful PyTorch bindings to .NET developers.
-- The [TorchSharp.PyBridge](incomplete-link) project for simplifying the complexities of cross-language model deployment.
+Show all commands:
+
+```powershell
+dotnet run --project .\ConsistencyTest\ConsistencyTest.csproj -- --help
+```
+
+### SAM 2 image prediction
+
+The image input is a float32 HWC NPY array with shape `[H,W,3]`, containing RGB values in `[0,1]`. Point coordinates use original-image `(x,y)` pixels.
+
+```powershell
+dotnet run --project .\ConsistencyTest\ConsistencyTest.csproj -c Release -- sam2-image `
+  --variant sam2.1-small `
+  --checkpoint C:\models\sam2.1_hiera_small.pt `
+  --image C:\inputs\image.npy `
+  --points C:\inputs\points.npy `
+  --labels C:\inputs\labels.npy `
+  --output C:\outputs\sam2 `
+  --multimask true
+```
+
+Outputs are `masks.npy`, `scores.npy`, `low_res_logits.npy`, and `summary.json`. The command also accepts box and low-resolution mask prompts; see `ConsistencyTest/README.md` for the complete input contract.
+
+The official SAM 2 README/notebook truck case has been exercised with `truck.jpg`, positive point `(500,375)`, and multimask output. The .NET SAM 2.1 small run produced three `1200x1800` masks; the highest predicted IoU score was approximately `0.937` in the validated environment.
+
+### SAM 3 detector prototype
+
+SAM 3 image input must be a finite float32 NCHW NPY array with shape `[1,3,1008,1008]`. Resize to `1008x1008`, scale RGB to `[0,1]`, and normalize using ImageNet mean `[0.485,0.456,0.406]` and standard deviation `[0.229,0.224,0.225]`.
+
+```powershell
+dotnet run --project .\ConsistencyTest\ConsistencyTest.csproj -c Release -- sam3-run `
+  --checkpoint C:\models\sam3\model.safetensors `
+  --image C:\inputs\sam3_image.npy `
+  --caption "shoe" `
+  --output C:\outputs\sam3 `
+  --device cpu `
+  --min-coverage 75
+```
+
+When `--image` is omitted, the command retains a seeded-random diagnostic input for backward compatibility. With an image it writes `pred_boxes.npy`, `pred_logits.npy`, intermediate feature arrays, and `summary.json`.
+
+The official SAM 3 example image and the `"shoe"` prompt have been run through this .NET path. This is an honest detector-only result: it must not be interpreted as the official SAM 3 instance-mask output. Checkpoint coverage and prediction quality may differ because the prototype does not yet load or implement the complete official model.
+
+## Repository layout
+
+- `SAMTorchSharp/` — model library and checkpoint loaders
+- `ConsistencyTest/` — scriptable NPY-based validation and inference CLI
+- `tests/ConsistencyTest.Tests/` — xUnit tests
+- `tools/` — safetensors comparison and SAM 2 parity-vector utilities
+- `WebDemo/` — sample ASP.NET application
+
+## Known limitations
+
+- The repository currently pins a Windows x64 CPU libtorch runtime.
+- SAM 3 is not a complete segmentation implementation and does not emit final masks.
+- Checkpoint files and generated test vectors are not committed because of their size and licensing.
+- PyTorch `.pt` interoperability depends on the relevant loader. The SAM 3 CLI accepts `.safetensors` or an explicitly converted `.bin`; it does not invoke Python implicitly.
+
+## Contributing
+
+Contributions and reproducible bug reports are welcome. Please include the model variant, checkpoint format, runtime, input shapes, and the smallest command that reproduces the issue. Run the Release build and test commands above before opening a pull request.
+
+## License and acknowledgements
+
+This repository is licensed under the [MIT License](LICENSE.txt). Model code and checkpoints may have separate upstream licenses.
+
+Thanks to Meta's Segment Anything teams, the TorchSharp project, and the [TorchSharp.PyBridge](https://github.com/shaltielshmid/TorchSharp.PyBridge) project.

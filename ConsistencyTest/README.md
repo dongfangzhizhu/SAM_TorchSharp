@@ -76,12 +76,19 @@ low-resolution logits are always clamped to `[-32,32]` and can be used for refin
 ```powershell
 dotnet run --project .\ConsistencyTest.csproj -- sam3-run `
   --checkpoint ..\..\checkpoints\sam3\model.safetensors `
+  --image .\image.npy `
   --output ..\..\consistency_test\cs_output `
   --caption "a dog" `
   --device cpu `
   --seed 42 `
   --min-coverage 75
 ```
+
+`--image` is optional for backward compatibility. When supplied, it must be a finite float32 NCHW
+array with shape `[1,3,1008,1008]`, resized and normalized with ImageNet mean
+`[0.485,0.456,0.406]` and standard deviation `[0.229,0.224,0.225]`. When omitted, the command uses
+the seeded random diagnostic input. The current SAM3 port is a detector prototype: it writes
+normalized `pred_boxes.npy` and `pred_logits.npy`, but does not produce final segmentation masks.
 
 The configured native dependency is CPU-only. A `.pt` checkpoint must be converted explicitly to `.bin`; the CLI does not invoke Python or create an implicit multi-gigabyte copy.
 

@@ -1,35 +1,113 @@
 [English](README.md)
+
 # SAM_TorchSharp
 
-## 项目简介
+SAM_TorchSharp 基于 [TorchSharp](https://github.com/dotnet/TorchSharp)，将 Meta Segment Anything 模型家族移植到 .NET 8。仓库包含 SAM 1 图像分割、SAM 2 图像/视频组件与 checkpoint 工具，以及实验性的 SAM 3 文本条件检测器。
 
-**SAM_TorchSharp** 是一个旨在探索.NET Core平台下人工智能开发潜力的项目。本项目基于[TorchSharp](https://github.com/dotnet/TorchSharp)和[TorchSharp.PyBridge](https://github.com/sha/未完成链接)实现，专注于将**Segment-Anything (SAM)** 模型的Python实现移植到.NET Core环境中。SAM是一种先进的图像分割模型，本移植工作支持`sam_vit_b`, `sam_vit_l`, 和 `sam_vit_h`版本，并成功集成了`mobileSam`，提供了高度灵活的模型加载机制。
+> 本项目是独立的 .NET 移植。仓库不包含模型 checkpoint；请从官方模型仓库获取，并遵守对应的许可证和访问要求。
 
-## 特性
+## 当前状态
 
-- **模型兼容性**: 支持直接通过指定weight文件路径在初始化时自动加载预训练模型。
-- **异常处理**: 目前，直接加载`sam_vit_b_01ec64.pth`, `sam_vit_h_4b8939.pth`, `sam_vit_l_0b3195.pth`会遇到异常。作为解决方案，建议先在Python环境中使用`torch.save(model.state_dict(),"sam.pth")`保存模型状态字典，然后在本项目中加载这个通用的`sam.pth`文件以避免加载问题。
-- **.NET Core集成**: 充分利用.NET Core跨平台特性，拓展AI应用的开发边界。
+| 模型 | 状态 | 说明 |
+| --- | --- | --- |
+| SAM 1 | 已支持 | 提供 ViT-H、ViT-L、ViT-B 和 MobileSAM/TinyViT builder，支持点、框和 mask 提示。 |
+| SAM 2 / 2.1 | 开发中，可使用 | 提供图像预测、多 mask 输出、checkpoint 校验、视频/记忆组件，以及 Python/.NET 一致性工具；脚本化 CLI 当前开放 tiny 和 small 变体。 |
+| SAM 3 | 实验性检测器原型 | 接收文本提示，输出归一化 `pred_boxes`/`pred_logits` 和中间特征；尚未实现最终像素级 mask 头。 |
 
-## 依赖项
+项目当前配置的原生包是 `libtorch-cpu-win-x64`，因此仓库内项目目前面向 Windows CPU 运行；一致性 CLI 未开放 GPU 执行。
 
-- [TorchSharp](https://github.com/dotnet/TorchSharp): .NET绑定到PyTorch的库，提供深度学习功能。
-- [TorchSharp.PyBridge](https://github.com/shaltielshmid/TorchSharp.PyBridge): 用于加载模型的权重文件，支持pth,pt以及safetensors文件格式
+## 环境要求
 
-## 安装与运行
+- Windows x64
+- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
+- 足够容纳所选 checkpoint 的内存和磁盘空间
+- Python 为可选依赖，仅在生成或对比一致性测试向量时需要
 
-请参照`INSTALL.md`文件以获取详细的安装指导及环境配置说明。项目克隆后，确保已正确安装所有依赖，并按照指引设置好.NET Core环境。
+主要依赖版本声明在 `SAMTorchSharp/SAMTorchSharp.csproj`：
 
-## 贡献指南
+- TorchSharp `0.102.6`
+- TorchVision `0.102.6`
+- TorchSharp.PyBridge `1.4.1`
+- Windows x64 libtorch CPU `2.2.1.1`
 
-我们欢迎任何形式的贡献，无论是代码提交、bug报告还是文档改进。请查阅`CONTRIBUTING.md`了解如何开始。
+## 构建与测试
 
-## 协议
+```powershell
+git clone https://github.com/dongfangzhizhu/SAM_TorchSharp.git
+cd SAM_TorchSharp
+dotnet restore .\SAM_TorchSharp.sln
+dotnet build .\SAM_TorchSharp.sln -c Release --no-restore
+dotnet test .\tests\ConsistencyTest.Tests\ConsistencyTest.Tests.csproj -c Release --no-restore
+```
 
-本项目遵循[MIT License](LICENSE)。鼓励自由使用、修改和分享，但请保留原作者版权信息。
+测试项目覆盖 NPY 读写、CLI 参数解析、数值比较、SAM 2 图像输入校验和 SAM 3 预处理图像校验。`testdata/` 下体积较大的生成型一致性向量会被 Git 忽略。
 
-## 致谢
+## 脚本化一致性 CLI
 
-特别感谢以下项目及其团队：
-- [TorchSharp](https://github.com/dotnet/TorchSharp)团队，为.NET开发者提供了强大的PyTorch接口。
-- [TorchSharp.PyBridge](https://github.com/shaltielshmid/TorchSharp.PyBridge)项目，简化了跨语言模型部署的复杂度。
+查看全部命令：
+
+```powershell
+dotnet run --project .\ConsistencyTest\ConsistencyTest.csproj -- --help
+```
+
+### SAM 2 图像预测
+
+图像输入是 float32 HWC NPY 数组，形状为 `[H,W,3]`，RGB 值范围为 `[0,1]`。点坐标使用原图像素 `(x,y)`。
+
+```powershell
+dotnet run --project .\ConsistencyTest\ConsistencyTest.csproj -c Release -- sam2-image `
+  --variant sam2.1-small `
+  --checkpoint C:\models\sam2.1_hiera_small.pt `
+  --image C:\inputs\image.npy `
+  --points C:\inputs\points.npy `
+  --labels C:\inputs\labels.npy `
+  --output C:\outputs\sam2 `
+  --multimask true
+```
+
+输出包括 `masks.npy`、`scores.npy`、`low_res_logits.npy` 和 `summary.json`。命令也支持框提示和低分辨率 mask 提示；完整输入约定请参阅 `ConsistencyTest/README.md`。
+
+已使用 SAM 2 官方 README/notebook 的 truck 用例进行验证：`truck.jpg`、正点 `(500,375)`、多 mask 输出。在已验证环境中，.NET SAM 2.1 small 生成了三个 `1200x1800` mask，最高预测 IoU 分数约为 `0.937`。
+
+### SAM 3 检测器原型
+
+SAM 3 图像输入必须是有限值 float32 NCHW NPY 数组，形状为 `[1,3,1008,1008]`。先缩放到 `1008x1008`，将 RGB 缩放到 `[0,1]`，再使用 ImageNet mean `[0.485,0.456,0.406]` 和 std `[0.229,0.224,0.225]` 标准化。
+
+```powershell
+dotnet run --project .\ConsistencyTest\ConsistencyTest.csproj -c Release -- sam3-run `
+  --checkpoint C:\models\sam3\model.safetensors `
+  --image C:\inputs\sam3_image.npy `
+  --caption "shoe" `
+  --output C:\outputs\sam3 `
+  --device cpu `
+  --min-coverage 75
+```
+
+省略 `--image` 时，为向后兼容，命令仍使用固定 seed 的随机诊断输入。提供图片时会写出 `pred_boxes.npy`、`pred_logits.npy`、中间特征数组和 `summary.json`。
+
+已使用 SAM 3 官方示例图片和 `"shoe"` 提示运行该 .NET 路径。必须如实说明：这只是 detector-only 结果，不能当作官方 SAM 3 实例 mask 输出。由于原型尚未加载或实现完整官方模型，checkpoint 覆盖率和预测质量可能存在差异。
+
+## 仓库结构
+
+- `SAMTorchSharp/`：模型库和 checkpoint loader
+- `ConsistencyTest/`：基于 NPY 的脚本化校验和推理 CLI
+- `tests/ConsistencyTest.Tests/`：xUnit 测试
+- `tools/`：safetensors 对比和 SAM 2 一致性向量工具
+- `WebDemo/`：ASP.NET 示例应用
+
+## 已知限制
+
+- 仓库当前固定使用 Windows x64 CPU libtorch runtime。
+- SAM 3 不是完整分割实现，不能输出最终 mask。
+- checkpoint 和生成型测试向量因体积及许可证原因不提交到仓库。
+- PyTorch `.pt` 互操作取决于对应 loader。SAM 3 CLI 接受 `.safetensors` 或显式转换的 `.bin`，不会隐式调用 Python。
+
+## 参与贡献
+
+欢迎提交代码和可复现的问题报告。请提供模型变体、checkpoint 格式、运行环境、输入形状和最小复现命令。提交 PR 前请运行上述 Release 构建和测试命令。
+
+## 许可证与致谢
+
+本仓库使用 [MIT License](LICENSE.txt)。模型代码和 checkpoint 可能适用独立的上游许可证。
+
+感谢 Meta Segment Anything 团队、TorchSharp 项目和 [TorchSharp.PyBridge](https://github.com/shaltielshmid/TorchSharp.PyBridge) 项目。
