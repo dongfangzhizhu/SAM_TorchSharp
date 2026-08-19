@@ -34,6 +34,19 @@ dotnet run --project .\ConsistencyTest.csproj -- compare `
 
 The command reports `max_abs_error`, `mean_abs_error`, `max_rel_error`, mismatch count, and exits with code `3` when tolerances are exceeded.
 
+## Validate a SAM2 checkpoint
+
+```powershell
+dotnet run --project .\ConsistencyTest.csproj -- sam2-checkpoint `
+  --variant sam2.1-tiny `
+  --checkpoint ..\..\checkpoints\sam2.1_hiera_tiny.pt `
+  --output .\sam2.1-tiny-summary.json `
+  --strict true
+```
+
+Supported variants are `sam2-tiny`, `sam2-small`, `sam2.1-tiny`, and `sam2.1-small`.
+The JSON report records loaded, missing, unexpected, and shape-mismatched tensors without invoking Python.
+
 ## Run the SAM3 detector prototype
 
 ```powershell

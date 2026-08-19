@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using SAMTorchSharp.Modeling.Sam2;
 using SAMTorchSharp.Modeling.Sam3;
 using static TorchSharp.torch;
 
@@ -27,6 +29,7 @@ internal static class Program
             {
                 "info" => RunInfo(options),
                 "compare" => RunCompare(options),
+                "sam2-checkpoint" => RunSam2Checkpoint(options),
                 "sam3-run" => RunSam3(options),
                 "self-test" => RunSelfTest(options),
                 _ => Fail($"Unknown command '{args[0]}'. Run with --help for usage.", UsageError),
@@ -153,6 +156,39 @@ internal static class Program
         return 0;
     }
 
+    private static int RunSam2Checkpoint(CliOptions options)
+    {
+        var checkpointPath = options.RequirePath("checkpoint");
+        var variantName = options.Get("variant") ?? throw new CliException("Missing required option '--variant'.");
+        var outputPath = Path.GetFullPath(options.Get("output") ?? "sam2-checkpoint-summary.json");
+        var strict = options.GetBool("strict", true);
+        options.EnsureNoUnused();
+
+        var variant = variantName.ToLowerInvariant() switch
+        {
+            "sam2-tiny" => Sam2ModelVariant.Sam2Tiny,
+            "sam2-small" => Sam2ModelVariant.Sam2Small,
+            "sam2.1-tiny" => Sam2ModelVariant.Sam21Tiny,
+            "sam2.1-small" => Sam2ModelVariant.Sam21Small,
+            _ => throw new CliException("--variant must be sam2-tiny, sam2-small, sam2.1-tiny, or sam2.1-small."),
+        };
+
+        Console.WriteLine($"Building {variantName} inference model...");
+        using var model = Sam2ModelBuilder.Build(variant);
+        var report = Sam2CheckpointLoader.Load(model, checkpointPath, strict);
+        Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
+        File.WriteAllText(outputPath, JsonSerializer.Serialize(report, new JsonSerializerOptions
+        {
+            WriteIndented = true,
+            Converters = { new JsonStringEnumConverter() },
+        }));
+        Console.WriteLine($"loaded={report.LoadedKeys.Count}, missing={report.MissingKeys.Count}, " +
+                          $"unexpected={report.UnexpectedKeys.Count}, shape_mismatch={report.ShapeMismatches.Count}, " +
+                          $"coverage={report.Coverage:F2}%");
+        Console.WriteLine($"Report: {outputPath}");
+        return report.IsComplete ? 0 : ValidationError;
+    }
+
     private static int RunSelfTest(CliOptions options)
     {
         options.EnsureNoUnused();
@@ -209,7 +245,13 @@ internal static class Program
               ConsistencyTest info
               ConsistencyTest self-test
               ConsistencyTest compare --expected <file.npy> --actual <file.npy> [--atol 1e-5] [--rtol 1e-4]
+              ConsistencyTest sam2-checkpoint --variant <name> --checkpoint <model.pt|model.safetensors> [options]
               ConsistencyTest sam3-run --checkpoint <model.safetensors|model.bin> [options]
+
+            sam2-checkpoint options:
+              --variant <name>          sam2-tiny, sam2-small, sam2.1-tiny, or sam2.1-small
+              --output <file.json>      Loading report (default: ./sam2-checkpoint-summary.json)
+              --strict <true|false>     Require zero missing/unexpected/mismatched keys (default: true)
 
             sam3-run options:
               --output <directory>       Output directory (default: ./sam3-output)
@@ -282,6 +324,15 @@ internal sealed class CliOptions
         if (!double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) ||
             double.IsNaN(parsed) || parsed < min || parsed > max)
             throw new CliException($"Option '--{name}' must be a number between {min} and {max}.");
+        return parsed;
+    }
+
+    public bool GetBool(string name, bool defaultValue)
+    {
+        var value = Get(name);
+        if (value is null) return defaultValue;
+        if (!bool.TryParse(value, out var parsed))
+            throw new CliException($"Option '--{name}' must be true or false.");
         return parsed;
     }
 
