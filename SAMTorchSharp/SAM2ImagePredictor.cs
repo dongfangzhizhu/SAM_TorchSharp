@@ -123,6 +123,7 @@ namespace SAMTorchSharp
         /// </summary>
         public void SetImage(Tensor image)
         {
+            using var noGrad = no_grad();
             ResetPredictor();
 
             long h, w;
@@ -167,17 +168,16 @@ namespace SAMTorchSharp
             }
 
             var bbFeatSizes = new[] { (256L, 256L), (128L, 128L), (64L, 64L) };
-            var feats = new List<Tensor>();
-            for (int i = visionFeats.Count - 1; i >= 0; i--)
+            var feats = new Tensor[visionFeats.Count];
+            for (int i = 0; i < visionFeats.Count; i++)
             {
                 var feat = visionFeats[i];
                 var (fh, fw) = bbFeatSizes[Math.Min(i, bbFeatSizes.Length - 1)];
-                feat = feat.permute(new long[] { 1, 2, 0 }).view(new long[] { 1, -1, fh, fw });
-                feats.Add(feat);
+                feats[i] = feat.permute(new long[] { 1, 2, 0 }).view(new long[] { 1, -1, fh, fw });
             }
 
-            _imageEmbedding = feats[feats.Count - 1];
-            _highResFeatures = feats.Take(feats.Count - 1).ToList();
+            _imageEmbedding = feats[^1];
+            _highResFeatures = feats.Take(feats.Length - 1).ToList();
             _isImageSet = true;
         }
 
@@ -251,10 +251,10 @@ namespace SAMTorchSharp
 
             bool batchedMode = concatPoints is not null && concatPoints.Item1.size(0) > 1;
 
-            var highResFeatures = _highResFeatures?.Select(f => f.unsqueeze(0)).ToList() ?? new List<Tensor>();
+            var highResFeatures = _highResFeatures ?? new List<Tensor>();
 
             var (lowResMultimasks, ious, _, _) = _model.sam_mask_decoder.forward(
-                _imageEmbedding!.unsqueeze(0),
+                _imageEmbedding!,
                 _model.sam_prompt_encoder.get_dense_pe(),
                 sparseEmbeddings,
                 denseEmbeddings,
