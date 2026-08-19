@@ -226,3 +226,13 @@ FakesAssemblies/
 # SAM2/SAM3 迁移过程中生成的数值校验测试向量（体积较大，随机权重可重新生成，不入库）
 testdata/
 testdata_tmp/
+
+# 本地迁移诊断输出（均可重新生成）
+build_*.txt
+build_out*.txt
+build_result.txt
+build_readout.txt
+build_run.txt
+cs_run*.txt
+ConsistencyTest/cs_run*.txt
+ConsistencyTest/missing_keys.txt
