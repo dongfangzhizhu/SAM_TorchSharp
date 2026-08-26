@@ -2,18 +2,20 @@
 {
     public class Annotation
     {
-        public string Type { get; set; }
-        public short X { get; set; }
-        public short Y { get; set; }
-        public short? X1 { get; set; } // 可以为null，因为不是所有Annotation都有x1和y1
-        public short? Y1 { get; set; }
-        public short? X2 { get; set; }
-        public short? Y2 { get; set; }
+        public string Type { get; set; } = string.Empty;
+        public int X { get; set; }
+        public int Y { get; set; }
+        public int? X1 { get; set; } // 可以为null，因为不是所有Annotation都有x1和y1
+        public int? Y1 { get; set; }
+        public int? X2 { get; set; }
+        public int? Y2 { get; set; }
     }
 
     public class ImageDataRequest
     {
-        public string Image { get; set; } // 图像的Base64编码
-        public List<Annotation> Annotations { get; set; }
+        public string Model { get; set; } = "sam1";
+        public string Image { get; set; } = string.Empty; // 图像的Base64编码
+        public string? Caption { get; set; }
+        public List<Annotation> Annotations { get; set; } = [];
     }
 }

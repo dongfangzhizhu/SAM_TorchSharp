@@ -1,389 +1,105 @@
-﻿@{
-	Layout = null;
-}
-<!DOCTYPE html>
+@model IReadOnlyList<WebDemo.Models.ModelAvailability>
+@using System.IO
+@{ Layout = null; }
+<!doctype html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>图像标注与预测</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SAM TorchSharp WebDemo</title>
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-
-        .container {
-            display: flex;
-            justify-content: space-between;
-        }
-
-        .image-area {
-            border: 2px dashed #ccc;
-            padding: 20px;
-            margin-bottom: 20px;
-            text-align: center;
-            width: 45%;
-            min-height: 400px; /* 设置最小高度 */
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-        }
-
-        .image-placeholder {
-            width: 100%;
-            height: 300px; /* 设置占位符高度 */
-            background-color: #f0f0f0;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            font-size: 18px;
-            color: #666;
-        }
-
-        #preview, #result {
-            max-width: 100%;
-            max-height: 400px;
-            display: none; /* 初始隐藏图片 */
-        }
-
-        .buttons {
-            margin-top: 10px;
-        }
-
-        button {
-            margin: 5px;
-            padding: 5px 10px;
-        }
+        :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+        body { max-width: 1200px; margin: auto; padding: 24px; }
+        header, .toolbar, .status { margin-bottom: 18px; }
+        .toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 14px; border: 1px solid #8886; border-radius: 10px; }
+        button, select, input { padding: 8px 12px; }
+        .workspace { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+        .panel { min-height: 460px; border: 2px dashed #8888; border-radius: 12px; padding: 12px; display: flex; flex-direction: column; align-items: center; }
+        .canvas-wrap { position: relative; max-width: 100%; margin: auto; }
+        #preview { display: block; max-width: 100%; max-height: 520px; }
+        #canvas { position: absolute; inset: 0; cursor: crosshair; }
+        #result { max-width: 100%; max-height: 520px; margin: auto; }
+        #details { width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
+        .ok { color: #16833c; } .missing, .error { color: #c33; }
+        .hint { opacity: .75; font-size: .92rem; }
+        [hidden] { display: none !important; }
+        @@media (max-width: 800px) { .workspace { grid-template-columns: 1fr; } }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="image-area">
-            <input type="file" id="imageUpload" accept="image/*" style="display: none;">
-            <div class="image-placeholder" id="uploadPlaceholder">
-                <label for="imageUpload">点击上传或拖拽图像到此区域</label>
-            </div>
-            <img id="preview">
-            <div class="buttons">
-                <input type="radio" name="annotationType" value="foreground" checked> 前景
-                <input type="radio" name="annotationType" value="background"> 背景
-                <input type="radio" name="annotationType" value="rectangle"> 矩形标注
-                <button id="clearImage">清空</button>
-                <button id="clearAnnotations">清除标注</button>
-            </div>
-        </div>
-        <div class="image-area">
-            <div class="image-placeholder" id="resultPlaceholder">
-                预测结果将显示在这里
-            </div>
-            <img id="result">
-            <button id="predict">预测</button>
-        </div>
-    </div>
-
+    <header><h1>SAM TorchSharp WebDemo</h1><p>测试 SAM 1、SAM 2 点/框分割及实验性 SAM 3 文本检测器。</p></header>
+    <section class="status">
+        @foreach (var item in Model)
+        {
+            <div class="@(item.Available ? "ok" : "missing")">@(item.Available ? "✓" : "✗") @item.Name — @System.IO.Path.GetFileName(item.CheckpointPath)（@item.PromptType 提示）</div>
+        }
+        <div class="hint">权重目录可通过 <code>--Models:WeightsDirectory=...</code> 或环境变量 <code>Models__WeightsDirectory</code> 设置。</div>
+    </section>
+    <section class="toolbar">
+        <label>模型 <select id="model">@foreach (var item in Model) { <option value="@item.Id">@item.Name @(item.Available ? "" : "（缺少权重）")</option> }</select></label>
+        <input type="file" id="upload" accept="image/*" />
+        <span id="geometryTools">
+            <label><input type="radio" name="tool" value="foreground" checked /> 前景点</label>
+            <label><input type="radio" name="tool" value="background" /> 背景点</label>
+            <label><input type="radio" name="tool" value="rectangle" /> 矩形</label>
+        </span>
+        <label id="captionTool" hidden>文本提示 <input id="caption" value="shoe" maxlength="200" /></label>
+        <button id="clear" type="button">清除标注</button><button id="predict" type="button">运行测试</button>
+    </section>
+    <main class="workspace">
+        <section class="panel"><h2>输入与提示</h2><div class="canvas-wrap"><img id="preview" alt="上传图片预览" /><canvas id="canvas"></canvas></div><p>请选择图片，再点击添加点或拖动绘制矩形。</p></section>
+        <section class="panel"><h2>输出</h2><img id="result" alt="预测结果" hidden /><pre id="details">预测结果将在此显示。</pre></section>
+    </main>
     <script>
-        const imageUpload = document.getElementById('imageUpload');
-        const preview = document.getElementById('preview');
-        const uploadPlaceholder = document.getElementById('uploadPlaceholder');
-        const resultPlaceholder = document.getElementById('resultPlaceholder');
-        const clearImage = document.getElementById('clearImage');
-        const clearAnnotations = document.getElementById('clearAnnotations');
-        const predict = document.getElementById('predict');
-        const result = document.getElementById('result');
-
-        let annotations = [];
-        let canvas, ctx;
-        let isDrawing = false;
-        let startX, startY;
-        let imgWidth, imgHeight;
-        function getImageSizeFromBase64(base64Image) {
-            return new Promise((resolve, reject) => {
-                // 创建一个Image对象来处理Base64数据
-                const img = new Image();
-
-                // 设置图像的src为Base64数据
-                img.src = base64Image;
-
-                // 当图像加载完成时，读取其宽度和高度
-                img.onload = function () {
-                    resolve({ width: img.width, height: img.height });
-                };
-
-                // 如果图像加载失败，则捕获错误
-                img.onerror = function (error) {
-                    reject("Failed to load image: " + error);
-                };
-            });
-        }
-        function showPreview(src) {
-            preview.src = src;
-            preview.style.display = 'block';
-            uploadPlaceholder.style.display = 'none';
-            preview.onload = setupCanvas;  // 图像加载完成后设置canvas
-            getImageSizeFromBase64(src)
-                .then(dimensions => {
-                    imgWidth = dimensions.width;
-                    imgHeight = dimensions.height;
-                    console.log(`Image dimensions: ${dimensions.width} x ${dimensions.height}`);
-                })
-                .catch(error => {
-                    console.error(error);
-                });
-        }
-
-        function setupCanvas() {
-            if (canvas) {
-                canvas.remove();
-            }
-            canvas = document.createElement('canvas');
-            canvas.width = preview.width;
-            canvas.height = preview.height;
-            canvas.style.position = 'absolute';
-            canvas.style.left = preview.offsetLeft + 'px';
-            canvas.style.top = preview.offsetTop + 'px';
-            preview.parentElement.appendChild(canvas);
-            ctx = canvas.getContext('2d');
-
-            // 移除旧的事件监听器
-            canvas.removeEventListener('click', addAnnotation);
-            canvas.removeEventListener('mousedown', startRectangle);
-            canvas.removeEventListener('mousemove', drawRectangle);
-            canvas.removeEventListener('mouseup', endRectangle);
-
-            // 添加新的事件监听器
-            canvas.addEventListener('click', addAnnotation);
-            canvas.addEventListener('mousedown', startRectangle);
-            canvas.addEventListener('mousemove', drawRectangle);
-            canvas.addEventListener('mouseup', endRectangle);
-
-            // 重新绘制所有现有的标注
-            redrawAnnotations();
-        }
-
-        function addAnnotation(e) {
-            const rect = canvas.getBoundingClientRect();
-            const x = e.clientX - rect.left;
-            const y = e.clientY - rect.top;
-            const type = document.querySelector('input[name="annotationType"]:checked').value;
-
-            if (type !== 'rectangle') {
-                const existingAnnotation = annotations.find(ann =>
-                    ann.type !== 'rectangle' &&
-                    Math.abs(ann.x - x) < 5 &&
-                    Math.abs(ann.y - y) < 5
-                );
-
-                if (existingAnnotation) {
-                    annotations = annotations.filter(ann => ann !== existingAnnotation);
-                } else {
-                    annotations.push({ type, x, y });
-                }
-                redrawAnnotations();
+        const model = document.querySelector('#model'), upload = document.querySelector('#upload'), preview = document.querySelector('#preview');
+        const canvas = document.querySelector('#canvas'), context = canvas.getContext('2d'), details = document.querySelector('#details');
+        const result = document.querySelector('#result'), predict = document.querySelector('#predict');
+        let annotations = [], start = null;
+        const isSam3 = () => model.value === 'sam3';
+        const currentTool = () => document.querySelector('input[name=tool]:checked').value;
+        const position = event => { const rect = canvas.getBoundingClientRect(); return { x: event.clientX - rect.left, y: event.clientY - rect.top }; };
+        function render() {
+            context.clearRect(0, 0, canvas.width, canvas.height); context.lineWidth = 3;
+            for (const a of annotations) {
+                context.strokeStyle = a.type === 'foreground' ? '#00e676' : a.type === 'background' ? '#ff1744' : '#00b0ff';
+                if (a.type === 'rectangle') context.strokeRect(a.x1, a.y1, a.x2 - a.x1, a.y2 - a.y1);
+                else { context.beginPath(); context.arc(a.x, a.y, 6, 0, Math.PI * 2); context.stroke(); }
             }
         }
-
-        function drawAnnotation(x, y, type) {
-            ctx.beginPath();
-            ctx.arc(x, y, 3, 0, 2 * Math.PI);
-            ctx.fillStyle = type === 'foreground' ? 'red' : 'blue';
-            ctx.fill();
-        }
-
-        function startRectangle(e) {
-            if (document.querySelector('input[name="annotationType"]:checked').value === 'rectangle') {
-                isDrawing = true;
-                const rect = canvas.getBoundingClientRect();
-                startX = e.clientX - rect.left;
-                startY = e.clientY - rect.top;
-            }
-        }
-
-        function drawRectangle(e) {
-            if (!isDrawing) return;
-            annotations = [];
-            const rect = canvas.getBoundingClientRect();
-            const x = e.clientX - rect.left;
-            const y = e.clientY - rect.top;
-
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            redrawAnnotations();
-            ctx.beginPath();
-            ctx.rect(startX, startY, x - startX, y - startY);
-            ctx.strokeStyle = 'green';
-            ctx.stroke();
-        }
-
-        function endRectangle(e) {
-            if (!isDrawing) return;
-            isDrawing = false;
-            const rect = canvas.getBoundingClientRect();
-            const x = e.clientX - rect.left;
-            const y = e.clientY - rect.top;
-
-            const clickedRectangle = annotations.find(ann =>
-                ann.type === 'rectangle' &&
-                x >= Math.min(ann.x1, ann.x2) &&
-                x <= Math.max(ann.x1, ann.x2) &&
-                y >= Math.min(ann.y1, ann.y2) &&
-                y <= Math.max(ann.y1, ann.y2)
-            );
-
-            if (clickedRectangle) {
-                annotations = annotations.filter(ann => ann !== clickedRectangle);
-            } else if (Math.abs(x - startX) > 5 && Math.abs(y - startY) > 5) {
-                annotations.push({ type: 'rectangle', x1: startX, y1: startY, x2: x, y2: y });
-            }
-            redrawAnnotations();
-        }
-
-        function redrawAnnotations() {
-            if (!ctx) return;  // 如果ctx不存在,直接返回
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            annotations.forEach(ann => {
-                if (ann.type === 'rectangle') {
-                    ctx.beginPath();
-                    ctx.rect(ann.x1, ann.y1, ann.x2 - ann.x1, ann.y2 - ann.y1);
-                    ctx.strokeStyle = 'green';
-                    ctx.stroke();
-                } else {
-                    drawAnnotation(ann.x, ann.y, ann.type);
-                }
-            });
-        }
-
-        imageUpload.addEventListener('change', function (e) {
-            const file = e.target.files[0];
-            if (file) {
-                const reader = new FileReader();
-                reader.onload = function (event) {
-                    showPreview(event.target.result);
-                }
-                reader.readAsDataURL(file);
-            }
+        function syncCanvas() { canvas.width = preview.clientWidth; canvas.height = preview.clientHeight; render(); }
+        function clearOutput() { result.hidden = true; result.removeAttribute('src'); details.textContent = '预测结果将在此显示。'; }
+        upload.addEventListener('change', () => {
+            const file = upload.files[0]; if (!file) return;
+            if (file.size > 20 * 1024 * 1024) { details.textContent = '图片不能超过 20 MB。'; return; }
+            const reader = new FileReader(); reader.onload = () => { preview.onload = syncCanvas; preview.src = reader.result; annotations = []; clearOutput(); }; reader.readAsDataURL(file);
         });
-
-        clearImage.addEventListener('click', function () {
-            preview.style.display = 'none';
-            preview.src = '';
-            uploadPlaceholder.style.display = 'flex';
-            annotations = [];
-            if (canvas) {
-                canvas.remove();
-                canvas = null;
-            }
+        canvas.addEventListener('pointerdown', event => {
+            if (isSam3() || !preview.src) return; const point = position(event);
+            if (currentTool() === 'rectangle') start = point; else { annotations.push({ type: currentTool(), x: point.x, y: point.y }); render(); }
         });
-
-        clearAnnotations.addEventListener('click', function () {
-            annotations = [];
-            if (ctx) {
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-            }
+        canvas.addEventListener('pointerup', event => {
+            if (!start) return; const end = position(event); annotations = annotations.filter(x => x.type !== 'rectangle');
+            annotations.push({ type: 'rectangle', x1: Math.min(start.x, end.x), y1: Math.min(start.y, end.y), x2: Math.max(start.x, end.x), y2: Math.max(start.y, end.y) }); start = null; render();
         });
-
-        predict.addEventListener('click', function () {
-            if (!preview.src) return;
-            let correctAnnotations = [];
-            let xzoom = imgWidth / preview.width;
-            let yzoom = imgHeight / preview.height;
-            console.log(imgWidth + "\t" + preview.width + "\t" + imgHeight + "\t" + preview.height+"\t"+xzoom+"\t"+yzoom)
-            annotations.forEach(ann => {
-                if (ann.type === 'rectangle') {
-                    correctAnnotations.push({
-                        type: ann.type,
-                        x1: Math.trunc(ann.x1 * xzoom),
-                        y1: Math.trunc(ann.y1 * yzoom),
-                        x2: Math.trunc(ann.x2 * xzoom),
-                        y2: Math.trunc(ann.y2 * yzoom)
-                    });
-                } else {
-                    correctAnnotations.push({
-                        type: ann.type,
-                        x: Math.trunc(ann.x * xzoom),
-                        y: Math.trunc(ann.y * yzoom)
-                    });
-                }
-            });
-            console.log(annotations);
-                console.log(correctAnnotations);
-            const data = {
-                image: preview.src,
-                    annotations: correctAnnotations
-            };
-
-            fetch('/home/predict', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(data)
-            })
-                .then(response => response.blob())
-                .then(blob => {
-                    const url = URL.createObjectURL(blob);
-                    result.src = url;
-                    result.style.display = 'block';
-                    resultPlaceholder.style.display = 'none';
-                })
-                .catch(error => console.error('Error:', error));
+        document.querySelector('#clear').addEventListener('click', () => { annotations = []; render(); clearOutput(); });
+        model.addEventListener('change', () => {
+            document.querySelector('#geometryTools').hidden = isSam3(); document.querySelector('#captionTool').hidden = !isSam3();
+            canvas.style.pointerEvents = isSam3() ? 'none' : 'auto'; annotations = []; render(); clearOutput();
         });
-
-        // 拖拽上传功能
-        const dropArea = document.querySelector('.image-area');
-
-        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-            dropArea.addEventListener(eventName, preventDefaults, false);
-        });
-
-        function preventDefaults(e) {
-            e.preventDefault();
-            e.stopPropagation();
-        }
-
-        ['dragenter', 'dragover'].forEach(eventName => {
-            dropArea.addEventListener(eventName, highlight, false);
-        });
-
-        ['dragleave', 'drop'].forEach(eventName => {
-            dropArea.addEventListener(eventName, unhighlight, false);
-        });
-
-        function highlight(e) {
-            dropArea.classList.add('highlight');
-        }
-
-        function unhighlight(e) {
-            dropArea.classList.remove('highlight');
-        }
-
-        dropArea.addEventListener('drop', handleDrop, false);
-
-        function handleDrop(e) {
-            const dt = e.dataTransfer;
-            const file = dt.files[0];
-
-            if (file && file.type.startsWith('image/')) {
-                const reader = new FileReader();
-                reader.onload = function (event) {
-                    showPreview(event.target.result);
-                }
-                reader.readAsDataURL(file);
-            }
-        }
-
-        // 添加这个函数来处理标注类型的切换
-        function handleAnnotationTypeChange() {
-            if (canvas) {
-                setupCanvas();  // 重新设置canvas和事件监听器
-            }
-        }
-
-        // 为每个radio按钮添加change事件监听器
-        document.querySelectorAll('input[name="annotationType"]').forEach(radio => {
-            radio.addEventListener('change', handleAnnotationTypeChange);
+        window.addEventListener('resize', syncCanvas);
+        predict.addEventListener('click', async () => {
+            if (!preview.src) { details.textContent = '请先选择图片。'; return; }
+            const ratio = { x: preview.naturalWidth / canvas.width, y: preview.naturalHeight / canvas.height };
+            const corrected = annotations.map(a => a.type === 'rectangle'
+                ? { type: a.type, x1: Math.round(a.x1 * ratio.x), y1: Math.round(a.y1 * ratio.y), x2: Math.round(a.x2 * ratio.x), y2: Math.round(a.y2 * ratio.y) }
+                : { type: a.type, x: Math.round(a.x * ratio.x), y: Math.round(a.y * ratio.y) });
+            predict.disabled = true; details.textContent = '正在加载模型并推理，请稍候…';
+            try {
+                const response = await fetch('/home/predict', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: model.value, image: preview.src, caption: document.querySelector('#caption').value, annotations: corrected }) });
+                const payload = await response.json(); if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+                details.textContent = `${payload.message}\n\n${JSON.stringify(payload.data, null, 2)}`;
+                if (payload.image) { result.src = payload.image; result.hidden = false; } else result.hidden = true;
+            } catch (error) { result.hidden = true; details.textContent = `错误：${error.message}`; } finally { predict.disabled = false; }
         });
     </script>
 </body>

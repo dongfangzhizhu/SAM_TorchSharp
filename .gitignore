@@ -227,6 +227,9 @@ FakesAssemblies/
 testdata/
 testdata_tmp/
 
+# Model checkpoints are configured externally for WebDemo.
+WebDemo/weights/
+
 # 本地迁移诊断输出（均可重新生成）
 build_*.txt
 build_out*.txt

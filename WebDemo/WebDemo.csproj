@@ -14,10 +14,4 @@
     <ProjectReference Include="..\SAMTorchSharp\SAMTorchSharp.csproj" />
   </ItemGroup>
 
-  <ItemGroup>
-    <None Update="weights\mobile_sam.pt">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-  </ItemGroup>
-
 </Project>

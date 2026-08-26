@@ -95,6 +95,17 @@ The official SAM 3 example image and the `"shoe"` prompt have been run through t
 - `tools/` — safetensors comparison and SAM 2 parity-vector utilities
 - `WebDemo/` — sample ASP.NET application
 
+## WebDemo
+
+The WebDemo supports SAM 1/MobileSAM and SAM 2 point/box segmentation tests plus a SAM 3 text-conditioned detector-only test. Models are loaded on their first request; a missing checkpoint does not prevent the site from starting.
+
+```powershell
+dotnet run --project .\WebDemo\WebDemo.csproj -c Release -- `
+  --Models:WeightsDirectory=C:\models\sam
+```
+
+The default filenames are `mobile_sam.pt`, `sam2.1_hiera_tiny.pt`, and `sam3.safetensors`. Override them with `Models:Sam1Checkpoint`, `Models:Sam2Checkpoint`, `Models:Sam2Variant`, and `Models:Sam3Checkpoint`. Environment variables are also supported, for example `$env:Models__WeightsDirectory='C:\models\sam'`. Checkpoints are neither copied to build output nor committed to Git.
+
 ## Known limitations
 
 - The repository currently pins a Windows x64 CPU libtorch runtime.

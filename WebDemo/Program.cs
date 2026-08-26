@@ -8,6 +8,9 @@ namespace WebDemo
 
             // Add services to the container.
             builder.Services.AddControllersWithViews();
+            builder.Services.Configure<Models.ModelOptions>(
+                builder.Configuration.GetSection(Models.ModelOptions.SectionName));
+            builder.Services.AddSingleton<Utility.ModelInferenceService>();
 
             var app = builder.Build();
 

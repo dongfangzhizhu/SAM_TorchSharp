@@ -95,6 +95,17 @@ dotnet run --project .\ConsistencyTest\ConsistencyTest.csproj -c Release -- sam3
 - `tools/`：safetensors 对比和 SAM 2 一致性向量工具
 - `WebDemo/`：ASP.NET 示例应用
 
+## WebDemo
+
+WebDemo 支持 SAM 1/MobileSAM 和 SAM 2 点/框分割测试，以及 SAM 3 文本条件 detector-only 测试。模型在首次请求时加载；缺少某个 checkpoint 不会阻止网站启动。
+
+```powershell
+dotnet run --project .\WebDemo\WebDemo.csproj -c Release -- `
+  --Models:WeightsDirectory=C:\models\sam
+```
+
+默认文件名是 `mobile_sam.pt`、`sam2.1_hiera_tiny.pt` 和 `sam3.safetensors`。可分别通过 `Models:Sam1Checkpoint`、`Models:Sam2Checkpoint`、`Models:Sam2Variant` 和 `Models:Sam3Checkpoint` 覆盖。也可使用环境变量，例如 `$env:Models__WeightsDirectory='C:\models\sam'`。checkpoint 不会复制到构建输出或提交到 Git。
+
 ## 已知限制
 
 - 仓库当前固定使用 Windows x64 CPU libtorch runtime。
