@@ -2,7 +2,7 @@
 
 # SAM_TorchSharp
 
-SAM_TorchSharp ports Meta's Segment Anything model family to .NET 8 with [TorchSharp](https://github.com/dotnet/TorchSharp). The repository contains SAM 1 image segmentation, SAM 2 image/video components and checkpoint tooling, and an experimental SAM 3 text-conditioned detector.
+SAM_TorchSharp ports Meta's Segment Anything model family to .NET 8 with [TorchSharp](https://github.com/dotnet/TorchSharp). The repository contains SAM 1 image segmentation, SAM 2 image/video components and checkpoint tooling, and experimental SAM 3 text-conditioned instance segmentation.
 
 > This is an independent .NET port. Model checkpoints are not included; obtain them from the official model repositories and comply with their licenses and access requirements.
 
@@ -12,7 +12,7 @@ SAM_TorchSharp ports Meta's Segment Anything model family to .NET 8 with [TorchS
 | --- | --- | --- |
 | SAM 1 | Supported | ViT-H, ViT-L, ViT-B, and MobileSAM/TinyViT builders; point, box, and mask prompts. |
 | SAM 2 / 2.1 | In progress and usable | Image prediction, multimask output, checkpoint validation, video/memory components, and Python/.NET parity tools. The scriptable CLI currently exposes tiny and small variants. |
-| SAM 3 | Experimental detector prototype | Accepts a text prompt and emits normalized `pred_boxes`/`pred_logits` plus intermediate features. The final pixel-level mask head is not implemented. |
+| SAM 3 / 3.1 | Experimental instance segmentation | Accepts a text prompt and emits normalized `pred_boxes`/`pred_logits` plus per-query mask logits. The WebDemo filters detections and visualizes masks at the original image size. |
 
 The configured native package is `libtorch-cpu-win-x64`, so the checked-in projects currently support CPU execution on Windows. GPU execution is not exposed by the consistency CLI.
 
@@ -69,7 +69,7 @@ Outputs are `masks.npy`, `scores.npy`, `low_res_logits.npy`, and `summary.json`.
 
 The official SAM 2 README/notebook truck case has been exercised with `truck.jpg`, positive point `(500,375)`, and multimask output. The .NET SAM 2.1 small run produced three `1200x1800` masks; the highest predicted IoU score was approximately `0.937` in the validated environment.
 
-### SAM 3 detector prototype
+### SAM 3 text-conditioned segmentation
 
 SAM 3 image input must be a finite float32 NCHW NPY array with shape `[1,3,1008,1008]`. Resize to `1008x1008`, scale RGB to `[0,1]`, and normalize using ImageNet mean `[0.485,0.456,0.406]` and standard deviation `[0.229,0.224,0.225]`.
 
@@ -83,9 +83,9 @@ dotnet run --project .\ConsistencyTest\ConsistencyTest.csproj -c Release -- sam3
   --min-coverage 75
 ```
 
-When `--image` is omitted, the command retains a seeded-random diagnostic input for backward compatibility. With an image it writes `pred_boxes.npy`, `pred_logits.npy`, intermediate feature arrays, and `summary.json`.
+When `--image` is omitted, the command retains a seeded-random diagnostic input for backward compatibility. With an image it writes `pred_boxes.npy`, `pred_logits.npy`, intermediate feature arrays, and `summary.json`. The model forward result also contains per-query `pred_masks` mask logits, which the WebDemo consumes directly.
 
-The official SAM 3 example image and the `"shoe"` prompt have been run through this .NET path. This is an honest detector-only result: it must not be interpreted as the official SAM 3 instance-mask output. Checkpoint coverage and prediction quality may differ because the prototype does not yet load or implement the complete official model.
+The official SAM 3 example image and the `"shoe"` prompt have been run through this .NET path. The segmentation head now produces instance mask logits, but the port remains experimental: checkpoint key coverage and prediction quality, especially for SAM 3.1, may differ from the official implementation.
 
 ## Repository layout
 
@@ -97,7 +97,7 @@ The official SAM 3 example image and the `"shoe"` prompt have been run through t
 
 ## WebDemo
 
-The WebDemo independently configures and tests SAM, SAM 2, and SAM 2.1 point/box segmentation plus SAM 3 and SAM 3.1 text-conditioned detector-only inference. Models are lazy-loaded independently on their first request; a missing checkpoint does not prevent the site from starting. The “test all available models” action sends a real request to every configured model and reports each result.
+The WebDemo independently configures and tests SAM, SAM 2, and SAM 2.1 point/box segmentation plus SAM 3 and SAM 3.1 text-conditioned instance segmentation. For SAM 3, it applies a 0.5 confidence threshold, converts normalized `cxcywh` boxes to original-image pixel `xyxy`, resizes and thresholds mask logits, and returns an overlay PNG with scores and boxes. Models are lazy-loaded independently on their first request; a missing checkpoint does not prevent the site from starting. The “test all available models” action sends a real request to every configured model and reports each result.
 
 ```powershell
 dotnet run --project .\WebDemo\WebDemo.csproj -c Release -- `
@@ -110,7 +110,7 @@ Set `Directory` and `Name` independently under `Models:Sam`, `Models:Sam2`, `Mod
 ## Known limitations
 
 - The repository currently pins a Windows x64 CPU libtorch runtime.
-- SAM 3 and SAM 3.1 use the same current experimental detector architecture but separate model instances and checkpoints. They are not complete segmentation implementations and do not emit final masks.
+- SAM 3 and SAM 3.1 use the same current experimental segmentation architecture but separate model instances and checkpoints. SAM 3.1 checkpoint key mapping is incomplete, so output quality is not yet guaranteed to match the official implementation.
 - Checkpoint files and generated test vectors are not committed because of their size and licensing.
 - PyTorch `.pt` interoperability depends on the relevant loader. The SAM 3 CLI accepts `.safetensors` or an explicitly converted `.bin`; it does not invoke Python implicitly.
 

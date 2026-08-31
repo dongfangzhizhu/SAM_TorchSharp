@@ -40,8 +40,8 @@ public sealed class ModelPathResolver
         Sam = Resolve("sam", "SAM 1", "点或矩形", options.Sam, [".pt", ".pth", ".safetensors"]);
         Sam2 = Resolve("sam2", "SAM 2", "点或矩形", options.Sam2, [".pt", ".pth", ".safetensors"]);
         Sam21 = Resolve("sam2.1", "SAM 2.1", "点或矩形", options.Sam21, [".pt", ".pth", ".safetensors"]);
-        Sam3 = Resolve("sam3", "SAM 3 detector-only", "文本", options.Sam3, [".safetensors", ".bin", ".pt"]);
-        Sam31 = Resolve("sam3.1", "SAM 3.1 detector-only", "文本", options.Sam31, [".safetensors", ".bin", ".pt"]);
+        Sam3 = Resolve("sam3", "SAM 3", "文本", options.Sam3, [".safetensors", ".bin", ".pt"]);
+        Sam31 = Resolve("sam3.1", "SAM 3.1", "文本", options.Sam31, [".safetensors", ".bin", ".pt"]);
     }
 
     public ResolvedModel Sam { get; }

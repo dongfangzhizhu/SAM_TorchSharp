@@ -71,7 +71,7 @@ The command writes `masks.npy`, `scores.npy`, `low_res_logits.npy`, and `summary
 float32 binary arrays by default; use `--return-logits true` for full-resolution mask logits. The
 low-resolution logits are always clamped to `[-32,32]` and can be used for refinement.
 
-## Run the SAM3 detector prototype
+## Run SAM3 text-conditioned inference
 
 ```powershell
 dotnet run --project .\ConsistencyTest.csproj -- sam3-run `
@@ -87,8 +87,9 @@ dotnet run --project .\ConsistencyTest.csproj -- sam3-run `
 `--image` is optional for backward compatibility. When supplied, it must be a finite float32 NCHW
 array with shape `[1,3,1008,1008]`, resized and normalized with ImageNet mean
 `[0.485,0.456,0.406]` and standard deviation `[0.229,0.224,0.225]`. When omitted, the command uses
-the seeded random diagnostic input. The current SAM3 port is a detector prototype: it writes
-normalized `pred_boxes.npy` and `pred_logits.npy`, but does not produce final segmentation masks.
+the seeded random diagnostic input. The CLI currently writes normalized `pred_boxes.npy` and
+`pred_logits.npy`. The underlying model forward result also contains per-query mask logits; the
+WebDemo resizes, thresholds, and visualizes those masks at the original image size.
 
 The configured native dependency is CPU-only. A `.pt` checkpoint must be converted explicitly to `.bin`; the CLI does not invoke Python or create an implicit multi-gigabyte copy.
 

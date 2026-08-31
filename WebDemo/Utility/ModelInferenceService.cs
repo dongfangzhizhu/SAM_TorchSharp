@@ -122,23 +122,47 @@ public sealed class ModelInferenceService : IDisposable
         {
             var boxes = output["pred_boxes"];
             var logits = output["pred_logits"];
+            var masks = output["pred_masks"];
+            using var processed = Sam3PostProcessor.Process(boxes, logits, masks, image.size(1), image.size(2));
+            using var overlay = RenderInstanceMasks(image, processed.Masks);
+            var png = _imager.EncodeImage(overlay, ImageFormat.Png);
             return new PredictResponse(
                 isSam31 ? "sam3.1" : "sam3",
-                null,
-                $"{(isSam31 ? "SAM 3.1" : "SAM 3")} 当前为 detector-only：以下是原始检测张量统计，不是最终实例 mask。",
+                $"data:image/png;base64,{Convert.ToBase64String(png)}",
+                $"{(isSam31 ? "SAM 3.1" : "SAM 3")} 文本分割完成，检测到 {processed.Detections.Count} 个实例。",
                 new
                 {
                     caption = caption.Trim(),
-                    predBoxesShape = boxes.shape,
-                    predLogitsShape = logits.shape,
-                    boxRange = new[] { boxes.min().item<float>(), boxes.max().item<float>() },
-                    logitRange = new[] { logits.min().item<float>(), logits.max().item<float>() },
+                    count = processed.Detections.Count,
+                    detections = processed.Detections,
                 });
         }
         finally
         {
             foreach (var tensor in output.Values.Distinct()) tensor.Dispose();
         }
+    }
+
+    private static Tensor RenderInstanceMasks(Tensor image, Tensor masks)
+    {
+        var overlay = image.clone();
+        var colors = new byte[][]
+        {
+            [0, 180, 255], [255, 90, 90], [100, 220, 120], [255, 190, 60],
+            [180, 100, 255], [255, 100, 200], [80, 210, 210], [220, 220, 80],
+        };
+        for (var i = 0L; i < masks.size(0); i++)
+        {
+            using var mask = masks[i].unsqueeze(0).expand_as(image);
+            using var color = tensor(colors[i % colors.Length], dtype: ScalarType.Byte).reshape(3, 1, 1).expand_as(image);
+            var next = where(mask, color, overlay);
+            overlay.Dispose();
+            overlay = next;
+        }
+        if (overlay.dtype == ScalarType.Byte) return overlay;
+        var byteOverlay = overlay.to_type(ScalarType.Byte);
+        overlay.Dispose();
+        return byteOverlay;
     }
 
     private SamPredictor CreateSam()

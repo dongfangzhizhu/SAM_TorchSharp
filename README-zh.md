@@ -2,7 +2,7 @@
 
 # SAM_TorchSharp
 
-SAM_TorchSharp 基于 [TorchSharp](https://github.com/dotnet/TorchSharp)，将 Meta Segment Anything 模型家族移植到 .NET 8。仓库包含 SAM 1 图像分割、SAM 2 图像/视频组件与 checkpoint 工具，以及实验性的 SAM 3 文本条件检测器。
+SAM_TorchSharp 基于 [TorchSharp](https://github.com/dotnet/TorchSharp)，将 Meta Segment Anything 模型家族移植到 .NET 8。仓库包含 SAM 1 图像分割、SAM 2 图像/视频组件与 checkpoint 工具，以及实验性的 SAM 3 文本条件实例分割。
 
 > 本项目是独立的 .NET 移植。仓库不包含模型 checkpoint；请从官方模型仓库获取，并遵守对应的许可证和访问要求。
 
@@ -12,7 +12,7 @@ SAM_TorchSharp 基于 [TorchSharp](https://github.com/dotnet/TorchSharp)，将 M
 | --- | --- | --- |
 | SAM 1 | 已支持 | 提供 ViT-H、ViT-L、ViT-B 和 MobileSAM/TinyViT builder，支持点、框和 mask 提示。 |
 | SAM 2 / 2.1 | 开发中，可使用 | 提供图像预测、多 mask 输出、checkpoint 校验、视频/记忆组件，以及 Python/.NET 一致性工具；脚本化 CLI 当前开放 tiny 和 small 变体。 |
-| SAM 3 | 实验性检测器原型 | 接收文本提示，输出归一化 `pred_boxes`/`pred_logits` 和中间特征；尚未实现最终像素级 mask 头。 |
+| SAM 3 / 3.1 | 实验性实例分割 | 接收文本提示，输出归一化 `pred_boxes`/`pred_logits` 及逐 query mask logits；WebDemo 会过滤检测并在原图尺寸可视化 masks。 |
 
 项目当前配置的原生包是 `libtorch-cpu-win-x64`，因此仓库内项目目前面向 Windows CPU 运行；一致性 CLI 未开放 GPU 执行。
 
@@ -69,7 +69,7 @@ dotnet run --project .\ConsistencyTest\ConsistencyTest.csproj -c Release -- sam2
 
 已使用 SAM 2 官方 README/notebook 的 truck 用例进行验证：`truck.jpg`、正点 `(500,375)`、多 mask 输出。在已验证环境中，.NET SAM 2.1 small 生成了三个 `1200x1800` mask，最高预测 IoU 分数约为 `0.937`。
 
-### SAM 3 检测器原型
+### SAM 3 文本条件分割
 
 SAM 3 图像输入必须是有限值 float32 NCHW NPY 数组，形状为 `[1,3,1008,1008]`。先缩放到 `1008x1008`，将 RGB 缩放到 `[0,1]`，再使用 ImageNet mean `[0.485,0.456,0.406]` 和 std `[0.229,0.224,0.225]` 标准化。
 
@@ -83,9 +83,9 @@ dotnet run --project .\ConsistencyTest\ConsistencyTest.csproj -c Release -- sam3
   --min-coverage 75
 ```
 
-省略 `--image` 时，为向后兼容，命令仍使用固定 seed 的随机诊断输入。提供图片时会写出 `pred_boxes.npy`、`pred_logits.npy`、中间特征数组和 `summary.json`。
+省略 `--image` 时，为向后兼容，命令仍使用固定 seed 的随机诊断输入。提供图片时会写出 `pred_boxes.npy`、`pred_logits.npy`、中间特征数组和 `summary.json`。模型 forward 结果还包含逐 query `pred_masks` mask logits，WebDemo 会直接消费该张量。
 
-已使用 SAM 3 官方示例图片和 `"shoe"` 提示运行该 .NET 路径。必须如实说明：这只是 detector-only 结果，不能当作官方 SAM 3 实例 mask 输出。由于原型尚未加载或实现完整官方模型，checkpoint 覆盖率和预测质量可能存在差异。
+已使用 SAM 3 官方示例图片和 `"shoe"` 提示运行该 .NET 路径。分割头现已生成实例 mask logits，但该移植仍属实验性实现：checkpoint 键覆盖率及预测质量（特别是 SAM 3.1）可能与官方实现存在差异。
 
 ## 仓库结构
 
@@ -97,7 +97,7 @@ dotnet run --project .\ConsistencyTest\ConsistencyTest.csproj -c Release -- sam3
 
 ## WebDemo
 
-WebDemo 可分别配置和测试 SAM、SAM 2、SAM 2.1 点/框分割，以及 SAM 3、SAM 3.1 文本条件 detector-only 推理。模型在首次请求时独立惰性加载；缺少某个 checkpoint 不会阻止网站启动。页面中的“测试全部可用模型”会按顺序实际请求每个已配置模型并逐项报告结果。
+WebDemo 可分别配置和测试 SAM、SAM 2、SAM 2.1 点/框分割，以及 SAM 3、SAM 3.1 文本条件实例分割。对于 SAM 3，WebDemo 使用 0.5 置信度阈值，将归一化 `cxcywh` 框转换为原图像素 `xyxy`，缩放并阈值化 mask logits，然后返回叠加 PNG、分数和框。模型在首次请求时独立惰性加载；缺少某个 checkpoint 不会阻止网站启动。页面中的“测试全部可用模型”会按顺序实际请求每个已配置模型并逐项报告结果。
 
 ```powershell
 dotnet run --project .\WebDemo\WebDemo.csproj -c Release -- `
@@ -110,7 +110,7 @@ dotnet run --project .\WebDemo\WebDemo.csproj -c Release -- `
 ## 已知限制
 
 - 仓库当前固定使用 Windows x64 CPU libtorch runtime。
-- SAM 3 和 SAM 3.1 共用当前实验性 detector 架构，但使用各自的模型实例和 checkpoint；它们不是完整分割实现，不能输出最终 mask。
+- SAM 3 和 SAM 3.1 共用当前实验性分割架构，但使用各自的模型实例和 checkpoint。SAM 3.1 checkpoint 键映射尚不完整，因此暂不保证输出质量与官方实现一致。
 - checkpoint 和生成型测试向量因体积及许可证原因不提交到仓库。
 - PyTorch `.pt` 互操作取决于对应 loader。SAM 3 CLI 接受 `.safetensors` 或显式转换的 `.bin`，不会隐式调用 Python。
 
