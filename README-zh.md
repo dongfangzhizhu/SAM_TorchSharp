@@ -97,19 +97,20 @@ dotnet run --project .\ConsistencyTest\ConsistencyTest.csproj -c Release -- sam3
 
 ## WebDemo
 
-WebDemo 支持 SAM 1/MobileSAM 和 SAM 2 点/框分割测试，以及 SAM 3 文本条件 detector-only 测试。模型在首次请求时加载；缺少某个 checkpoint 不会阻止网站启动。
+WebDemo 可分别配置和测试 SAM、SAM 2、SAM 2.1 点/框分割，以及 SAM 3、SAM 3.1 文本条件 detector-only 推理。模型在首次请求时独立惰性加载；缺少某个 checkpoint 不会阻止网站启动。页面中的“测试全部可用模型”会按顺序实际请求每个已配置模型并逐项报告结果。
 
 ```powershell
 dotnet run --project .\WebDemo\WebDemo.csproj -c Release -- `
-  --Models:WeightsDirectory=C:\models\sam
+  --Models:Sam2:Directory=C:\models\sam2 `
+  --Models:Sam2:Name=sam2_hiera_tiny
 ```
 
-默认文件名是 `mobile_sam.pt`、`sam2.1_hiera_tiny.pt` 和 `sam3.safetensors`。可分别通过 `Models:Sam1Checkpoint`、`Models:Sam2Checkpoint`、`Models:Sam2Variant` 和 `Models:Sam3Checkpoint` 覆盖。也可使用环境变量，例如 `$env:Models__WeightsDirectory='C:\models\sam'`。checkpoint 不会复制到构建输出或提交到 Git。
+在 `appsettings.json` 的 `Models:Sam`、`Models:Sam2`、`Models:Sam21`、`Models:Sam3`、`Models:Sam31` 下分别设置 `Directory` 和 `Name`。`Name` 可带扩展名；不带扩展名时会探测该模型支持的 checkpoint 格式。例如 SAM 2 使用 `sam2_hiera_tiny`，SAM 2.1 使用 `sam2.1_hiera_tiny`。任一字段为空时，前端会将对应模型显示为“未配置”并禁用。也可使用环境变量，例如 `$env:Models__Sam31__Directory='C:\models\sam3.1'`。checkpoint 不会复制到构建输出或提交到 Git。
 
 ## 已知限制
 
 - 仓库当前固定使用 Windows x64 CPU libtorch runtime。
-- SAM 3 不是完整分割实现，不能输出最终 mask。
+- SAM 3 和 SAM 3.1 共用当前实验性 detector 架构，但使用各自的模型实例和 checkpoint；它们不是完整分割实现，不能输出最终 mask。
 - checkpoint 和生成型测试向量因体积及许可证原因不提交到仓库。
 - PyTorch `.pt` 互操作取决于对应 loader。SAM 3 CLI 接受 `.safetensors` 或显式转换的 `.bin`，不会隐式调用 Python。
 

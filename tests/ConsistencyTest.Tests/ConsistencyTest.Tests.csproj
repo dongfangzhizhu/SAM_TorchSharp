@@ -16,5 +16,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../ConsistencyTest/ConsistencyTest.csproj" />
+    <ProjectReference Include="../../WebDemo/WebDemo.csproj" />
   </ItemGroup>
 </Project>

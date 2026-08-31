@@ -13,7 +13,7 @@
 
     public class ImageDataRequest
     {
-        public string Model { get; set; } = "sam1";
+        public string Model { get; set; } = "sam";
         public string Image { get; set; } = string.Empty; // 图像的Base64编码
         public string? Caption { get; set; }
         public List<Annotation> Annotations { get; set; } = [];

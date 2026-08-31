@@ -27,16 +27,16 @@
     </style>
 </head>
 <body>
-    <header><h1>SAM TorchSharp WebDemo</h1><p>测试 SAM 1、SAM 2 点/框分割及实验性 SAM 3 文本检测器。</p></header>
+    <header><h1>SAM TorchSharp WebDemo</h1><p>逐项测试 SAM、SAM 2、SAM 2.1 点/框分割及 SAM 3、SAM 3.1 文本 detector-only 推理。</p></header>
     <section class="status">
         @foreach (var item in Model)
         {
-            <div class="@(item.Available ? "ok" : "missing")">@(item.Available ? "✓" : "✗") @item.Name — @System.IO.Path.GetFileName(item.CheckpointPath)（@item.PromptType 提示）</div>
+            <div class="@(item.Available ? "ok" : "missing")">@(item.Available ? "✓" : "✗") @item.Name — @item.Status@(string.IsNullOrEmpty(item.CheckpointPath) ? "" : $" / {System.IO.Path.GetFileName(item.CheckpointPath)}")（@item.PromptType 提示）</div>
         }
-        <div class="hint">权重目录可通过 <code>--Models:WeightsDirectory=...</code> 或环境变量 <code>Models__WeightsDirectory</code> 设置。</div>
+        <div class="hint">在 appsettings.json 的 Models.Sam、Sam2、Sam21、Sam3、Sam31 中分别设置 Directory 与 Name；任一为空时该模型不可用。</div>
     </section>
     <section class="toolbar">
-        <label>模型 <select id="model">@foreach (var item in Model) { <option value="@item.Id">@item.Name @(item.Available ? "" : "（缺少权重）")</option> }</select></label>
+        <label>模型 <select id="model">@foreach (var item in Model) { if (item.Available) { <option value="@item.Id">@item.Name</option> } else { <option value="@item.Id" disabled>@item.Name（@item.Status）</option> } }</select></label>
         <input type="file" id="upload" accept="image/*" />
         <span id="geometryTools">
             <label><input type="radio" name="tool" value="foreground" checked /> 前景点</label>
@@ -44,7 +44,7 @@
             <label><input type="radio" name="tool" value="rectangle" /> 矩形</label>
         </span>
         <label id="captionTool" hidden>文本提示 <input id="caption" value="shoe" maxlength="200" /></label>
-        <button id="clear" type="button">清除标注</button><button id="predict" type="button">运行测试</button>
+        <button id="clear" type="button">清除标注</button><button id="predict" type="button">运行当前模型</button><button id="predictAll" type="button">测试全部可用模型</button>
     </section>
     <main class="workspace">
         <section class="panel"><h2>输入与提示</h2><div class="canvas-wrap"><img id="preview" alt="上传图片预览" /><canvas id="canvas"></canvas></div><p>请选择图片，再点击添加点或拖动绘制矩形。</p></section>
@@ -53,9 +53,11 @@
     <script>
         const model = document.querySelector('#model'), upload = document.querySelector('#upload'), preview = document.querySelector('#preview');
         const canvas = document.querySelector('#canvas'), context = canvas.getContext('2d'), details = document.querySelector('#details');
-        const result = document.querySelector('#result'), predict = document.querySelector('#predict');
+        const result = document.querySelector('#result'), predict = document.querySelector('#predict'), predictAll = document.querySelector('#predictAll');
+        const availableModels = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(Model.Where(x => x.Available).Select(x => new { id = x.Id, name = x.Name })));
+        if (availableModels.length) model.value = availableModels[0].id;
         let annotations = [], start = null;
-        const isSam3 = () => model.value === 'sam3';
+        function isSam3(value = model.value) { return value === 'sam3' || value === 'sam3.1'; }
         const currentTool = () => document.querySelector('input[name=tool]:checked').value;
         const position = event => { const rect = canvas.getBoundingClientRect(); return { x: event.clientX - rect.left, y: event.clientY - rect.top }; };
         function render() {
@@ -68,6 +70,10 @@
         }
         function syncCanvas() { canvas.width = preview.clientWidth; canvas.height = preview.clientHeight; render(); }
         function clearOutput() { result.hidden = true; result.removeAttribute('src'); details.textContent = '预测结果将在此显示。'; }
+        function syncPromptTools() {
+            document.querySelector('#geometryTools').hidden = isSam3(); document.querySelector('#captionTool').hidden = !isSam3();
+            canvas.style.pointerEvents = isSam3() ? 'none' : 'auto';
+        }
         upload.addEventListener('change', () => {
             const file = upload.files[0]; if (!file) return;
             if (file.size > 20 * 1024 * 1024) { details.textContent = '图片不能超过 20 MB。'; return; }
@@ -83,23 +89,42 @@
         });
         document.querySelector('#clear').addEventListener('click', () => { annotations = []; render(); clearOutput(); });
         model.addEventListener('change', () => {
-            document.querySelector('#geometryTools').hidden = isSam3(); document.querySelector('#captionTool').hidden = !isSam3();
-            canvas.style.pointerEvents = isSam3() ? 'none' : 'auto'; annotations = []; render(); clearOutput();
+            syncPromptTools(); annotations = []; render(); clearOutput();
         });
+        syncPromptTools();
         window.addEventListener('resize', syncCanvas);
-        predict.addEventListener('click', async () => {
-            if (!preview.src) { details.textContent = '请先选择图片。'; return; }
+        function correctedAnnotations() {
             const ratio = { x: preview.naturalWidth / canvas.width, y: preview.naturalHeight / canvas.height };
-            const corrected = annotations.map(a => a.type === 'rectangle'
+            return annotations.map(a => a.type === 'rectangle'
                 ? { type: a.type, x1: Math.round(a.x1 * ratio.x), y1: Math.round(a.y1 * ratio.y), x2: Math.round(a.x2 * ratio.x), y2: Math.round(a.y2 * ratio.y) }
                 : { type: a.type, x: Math.round(a.x * ratio.x), y: Math.round(a.y * ratio.y) });
+        }
+        async function runModel(modelId) {
+            const response = await fetch('/home/predict', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: modelId, image: preview.src, caption: document.querySelector('#caption').value, annotations: correctedAnnotations() }) });
+            const payload = await response.json(); if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+            return payload;
+        }
+        predict.addEventListener('click', async () => {
+            if (!preview.src) { details.textContent = '请先选择图片。'; return; }
             predict.disabled = true; details.textContent = '正在加载模型并推理，请稍候…';
             try {
-                const response = await fetch('/home/predict', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: model.value, image: preview.src, caption: document.querySelector('#caption').value, annotations: corrected }) });
-                const payload = await response.json(); if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+                const payload = await runModel(model.value);
                 details.textContent = `${payload.message}\n\n${JSON.stringify(payload.data, null, 2)}`;
                 if (payload.image) { result.src = payload.image; result.hidden = false; } else result.hidden = true;
             } catch (error) { result.hidden = true; details.textContent = `错误：${error.message}`; } finally { predict.disabled = false; }
+        });
+        predictAll.addEventListener('click', async () => {
+            if (!preview.src) { details.textContent = '请先选择图片。'; return; }
+            if (availableModels.some(item => !isSam3(item.id)) && !annotations.length) { details.textContent = '测试全部模型前，请至少添加一个点或矩形，供 SAM/SAM 2/SAM 2.1 使用。'; return; }
+            if (availableModels.some(item => isSam3(item.id)) && !document.querySelector('#caption').value.trim()) { details.textContent = '测试全部模型前，请填写文本提示，供 SAM 3/SAM 3.1 使用。'; return; }
+            predict.disabled = predictAll.disabled = true; result.hidden = true; const reports = [];
+            for (const item of availableModels) {
+                details.textContent = `正在测试 ${item.name}…\n\n${reports.join('\n')}`;
+                try { const payload = await runModel(item.id); reports.push(`✓ ${item.name}: ${payload.message}`); }
+                catch (error) { reports.push(`✗ ${item.name}: ${error.message}`); }
+            }
+            details.textContent = `全部可用模型测试完成（${reports.length}/${availableModels.length} 已执行）：\n\n${reports.join('\n')}`;
+            predict.disabled = predictAll.disabled = false;
         });
     </script>
 </body>

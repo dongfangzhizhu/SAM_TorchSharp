@@ -97,19 +97,20 @@ The official SAM 3 example image and the `"shoe"` prompt have been run through t
 
 ## WebDemo
 
-The WebDemo supports SAM 1/MobileSAM and SAM 2 point/box segmentation tests plus a SAM 3 text-conditioned detector-only test. Models are loaded on their first request; a missing checkpoint does not prevent the site from starting.
+The WebDemo independently configures and tests SAM, SAM 2, and SAM 2.1 point/box segmentation plus SAM 3 and SAM 3.1 text-conditioned detector-only inference. Models are lazy-loaded independently on their first request; a missing checkpoint does not prevent the site from starting. The “test all available models” action sends a real request to every configured model and reports each result.
 
 ```powershell
 dotnet run --project .\WebDemo\WebDemo.csproj -c Release -- `
-  --Models:WeightsDirectory=C:\models\sam
+  --Models:Sam2:Directory=C:\models\sam2 `
+  --Models:Sam2:Name=sam2_hiera_tiny
 ```
 
-The default filenames are `mobile_sam.pt`, `sam2.1_hiera_tiny.pt`, and `sam3.safetensors`. Override them with `Models:Sam1Checkpoint`, `Models:Sam2Checkpoint`, `Models:Sam2Variant`, and `Models:Sam3Checkpoint`. Environment variables are also supported, for example `$env:Models__WeightsDirectory='C:\models\sam'`. Checkpoints are neither copied to build output nor committed to Git.
+Set `Directory` and `Name` independently under `Models:Sam`, `Models:Sam2`, `Models:Sam21`, `Models:Sam3`, and `Models:Sam31` in `appsettings.json`. `Name` may include an extension; supported checkpoint extensions are probed when it does not. For example, use `sam2_hiera_tiny` for SAM 2 and `sam2.1_hiera_tiny` for SAM 2.1. If either value is empty, the UI marks that model as unconfigured and disables it. Environment variables are also supported, for example `$env:Models__Sam31__Directory='C:\models\sam3.1'`. Checkpoints are neither copied to build output nor committed to Git.
 
 ## Known limitations
 
 - The repository currently pins a Windows x64 CPU libtorch runtime.
-- SAM 3 is not a complete segmentation implementation and does not emit final masks.
+- SAM 3 and SAM 3.1 use the same current experimental detector architecture but separate model instances and checkpoints. They are not complete segmentation implementations and do not emit final masks.
 - Checkpoint files and generated test vectors are not committed because of their size and licensing.
 - PyTorch `.pt` interoperability depends on the relevant loader. The SAM 3 CLI accepts `.safetensors` or an explicitly converted `.bin`; it does not invoke Python implicitly.
 

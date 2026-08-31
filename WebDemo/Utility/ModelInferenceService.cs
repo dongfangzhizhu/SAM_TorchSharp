@@ -12,40 +12,35 @@ namespace WebDemo.Utility;
 
 public sealed class ModelInferenceService : IDisposable
 {
-    private readonly ModelOptions _options;
     private readonly ModelPathResolver _paths;
     private readonly ILogger<ModelInferenceService> _logger;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly io.SkiaImager _imager = new();
-    private SamPredictor? _sam1;
-    private Sam? _sam1Model;
+    private SamPredictor? _sam;
+    private Sam? _samModel;
     private SAM2ImagePredictor? _sam2;
+    private SAM2ImagePredictor? _sam21;
     private Sam3BaseNew? _sam3;
+    private Sam3BaseNew? _sam31;
 
     public ModelInferenceService(
         IOptions<ModelOptions> options,
         IWebHostEnvironment environment,
         ILogger<ModelInferenceService> logger)
     {
-        _options = options.Value;
-        _paths = new ModelPathResolver(_options, environment.ContentRootPath);
+        _paths = new ModelPathResolver(options.Value, environment.ContentRootPath);
         _logger = logger;
         torchvision.io.DefaultImager = new io.SkiaImager(100);
     }
 
-    public IReadOnlyList<ModelAvailability> GetAvailability() =>
-    [
-        Availability("sam1", "SAM 1 / MobileSAM", _paths.Sam1, "点或矩形"),
-        Availability("sam2", $"SAM 2 ({_options.Sam2Variant})", _paths.Sam2, "点或矩形"),
-        Availability("sam3", "SAM 3 detector-only", _paths.Sam3, "文本"),
-    ];
+    public IReadOnlyList<ModelAvailability> GetAvailability() => _paths.All.Select(Availability).ToArray();
 
     public async Task<PredictResponse> PredictAsync(ImageDataRequest request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
         var model = request.Model.Trim().ToLowerInvariant();
-        if (model is not ("sam1" or "sam2" or "sam3"))
-            throw new ArgumentException("Model must be sam1, sam2, or sam3.");
+        var configuredModel = _paths.Get(model);
+        RequireCheckpoint(configuredModel);
         if (string.IsNullOrWhiteSpace(request.Image))
             throw new ArgumentException("Please upload an image.");
 
@@ -55,9 +50,11 @@ public sealed class ModelInferenceService : IDisposable
             using var image = DecodeImage(request.Image);
             return model switch
             {
-                "sam1" => PredictSam1(image, request.Annotations),
+                "sam" or "sam1" => PredictSam(image, request.Annotations),
                 "sam2" => PredictSam2(image, request.Annotations),
-                "sam3" => PredictSam3(image, request.Caption),
+                "sam2.1" or "sam21" => PredictSam21(image, request.Annotations),
+                "sam3" => PredictSam3(image, request.Caption, isSam31: false),
+                "sam3.1" or "sam31" => PredictSam3(image, request.Caption, isSam31: true),
                 _ => throw new InvalidOperationException("Unreachable model selection."),
             };
         }
@@ -67,58 +64,68 @@ public sealed class ModelInferenceService : IDisposable
         }
     }
 
-    private PredictResponse PredictSam1(Tensor image, IReadOnlyList<Annotation> annotations)
+    private PredictResponse PredictSam(Tensor image, IReadOnlyList<Annotation> annotations)
     {
         EnsurePrompts(annotations);
-        _sam1 ??= CreateSam1();
-        _sam1.SetImage(image.unsqueeze(0));
+        _sam ??= CreateSam();
+        _sam.SetImage(image.unsqueeze(0));
         using var points = CreatePoints(annotations);
         using var labels = CreateLabels(annotations);
         using var box = CreateBox(annotations);
         // The legacy SAM 1 API uses null to represent an omitted prompt although its annotations are non-nullable.
-        var (masks, scores, logits) = _sam1.Predict(box: box!, pointCoords: points!, pointLabels: labels!, multimaskOutput: true);
+        var (masks, scores, logits) = _sam.Predict(box: box!, pointCoords: points!, pointLabels: labels!, multimaskOutput: true);
         using (masks)
         using (scores)
         using (logits)
         {
-            return MaskResponse("sam1", image, masks, scores);
+            return MaskResponse("sam", image, masks, scores);
         }
     }
 
     private PredictResponse PredictSam2(Tensor image, IReadOnlyList<Annotation> annotations)
+        => PredictSam2(image, annotations, isSam21: false);
+
+    private PredictResponse PredictSam21(Tensor image, IReadOnlyList<Annotation> annotations)
+        => PredictSam2(image, annotations, isSam21: true);
+
+    private PredictResponse PredictSam2(Tensor image, IReadOnlyList<Annotation> annotations, bool isSam21)
     {
         EnsurePrompts(annotations);
-        _sam2 ??= CreateSam2();
+        var predictor = isSam21
+            ? _sam21 ??= CreateSam2(_paths.Sam21, requireSam21: true)
+            : _sam2 ??= CreateSam2(_paths.Sam2, requireSam21: false);
         using var hwc = image.permute(1, 2, 0).contiguous();
-        _sam2.SetImage(hwc);
+        predictor.SetImage(hwc);
         using var points = CreatePoints(annotations, ScalarType.Float32);
         using var labels = CreateLabels(annotations, ScalarType.Float32);
         using var box = CreateBox(annotations, ScalarType.Float32);
-        var (masks, scores, logits) = _sam2.Predict(
+        var (masks, scores, logits) = predictor.Predict(
             points, labels, box, multimaskOutput: true, returnLogits: false, normalizeCoordinates: true);
         using (masks)
         using (scores)
         using (logits)
         {
-            return MaskResponse("sam2", image, masks, scores);
+            return MaskResponse(isSam21 ? "sam2.1" : "sam2", image, masks, scores);
         }
     }
 
-    private PredictResponse PredictSam3(Tensor image, string? caption)
+    private PredictResponse PredictSam3(Tensor image, string? caption, bool isSam31)
     {
         if (string.IsNullOrWhiteSpace(caption))
             throw new ArgumentException("SAM 3 requires a text prompt.");
-        _sam3 ??= CreateSam3();
+        var model = isSam31
+            ? _sam31 ??= CreateSam3(_paths.Sam31)
+            : _sam3 ??= CreateSam3(_paths.Sam3);
         using var transformed = new SAM2Transforms(1008).__call(image).unsqueeze(0);
-        var output = _sam3.Forward(transformed, [caption.Trim()]);
+        var output = model.Forward(transformed, [caption.Trim()]);
         try
         {
             var boxes = output["pred_boxes"];
             var logits = output["pred_logits"];
             return new PredictResponse(
-                "sam3",
+                isSam31 ? "sam3.1" : "sam3",
                 null,
-                "SAM 3 当前为 detector-only：以下是原始检测张量统计，不是最终实例 mask。",
+                $"{(isSam31 ? "SAM 3.1" : "SAM 3")} 当前为 detector-only：以下是原始检测张量统计，不是最终实例 mask。",
                 new
                 {
                     caption = caption.Trim(),
@@ -134,31 +141,36 @@ public sealed class ModelInferenceService : IDisposable
         }
     }
 
-    private SamPredictor CreateSam1()
+    private SamPredictor CreateSam()
     {
-        RequireCheckpoint(_paths.Sam1, "SAM 1");
-        _logger.LogInformation("Loading SAM 1 checkpoint {Checkpoint}", _paths.Sam1);
-        _sam1Model = BuildSam.BuildSAMVitT(_paths.Sam1);
-        _sam1Model.eval();
-        return new SamPredictor(_sam1Model);
+        var type = ModelPathResolver.ParseSamModel(_paths.Sam.Name);
+        _logger.LogInformation("Loading SAM checkpoint {Checkpoint} as {Model}", _paths.Sam.CheckpointPath, type);
+        _samModel = type switch
+        {
+            "vit_t" => BuildSam.BuildSAMVitT(_paths.Sam.CheckpointPath),
+            "vit_b" => BuildSam.BuildSAMVitB(_paths.Sam.CheckpointPath),
+            "vit_l" => BuildSam.BuildSAMVitL(_paths.Sam.CheckpointPath),
+            "vit_h" => BuildSam.BuildSAMVitH(_paths.Sam.CheckpointPath),
+            _ => throw new InvalidOperationException("Unreachable SAM model selection."),
+        };
+        _samModel.eval();
+        return new SamPredictor(_samModel);
     }
 
-    private SAM2ImagePredictor CreateSam2()
+    private SAM2ImagePredictor CreateSam2(ResolvedModel configuredModel, bool requireSam21)
     {
-        RequireCheckpoint(_paths.Sam2, "SAM 2");
-        var variant = ParseSam2Variant(_options.Sam2Variant);
-        _logger.LogInformation("Loading SAM 2 checkpoint {Checkpoint} as {Variant}", _paths.Sam2, variant);
+        var variant = ModelPathResolver.ParseSam2Model(configuredModel.Name, requireSam21);
+        _logger.LogInformation("Loading {Model} checkpoint {Checkpoint} as {Variant}", configuredModel.DisplayName, configuredModel.CheckpointPath, variant);
         var model = Sam2ModelBuilder.Build(variant);
-        Sam2CheckpointLoader.Load(model, _paths.Sam2, strict: true);
+        Sam2CheckpointLoader.Load(model, configuredModel.CheckpointPath, strict: true);
         return new SAM2ImagePredictor(model);
     }
 
-    private Sam3BaseNew CreateSam3()
+    private Sam3BaseNew CreateSam3(ResolvedModel configuredModel)
     {
-        RequireCheckpoint(_paths.Sam3, "SAM 3");
-        _logger.LogInformation("Loading SAM 3 checkpoint {Checkpoint}", _paths.Sam3);
+        _logger.LogInformation("Loading {Model} checkpoint {Checkpoint}", configuredModel.DisplayName, configuredModel.CheckpointPath);
         var model = new BuildSam3New().Build();
-        new Sam3CheckpointLoaderUniversal().LoadModel(model, _paths.Sam3, CPU);
+        new Sam3CheckpointLoaderBinary().LoadModel(model, configuredModel.CheckpointPath, CPU);
         model.eval();
         return model;
     }
@@ -223,28 +235,34 @@ public sealed class ModelInferenceService : IDisposable
             throw new ArgumentException("Rectangle annotations require x1, y1, x2, and y2.");
     }
 
-    internal static Sam2ModelVariant ParseSam2Variant(string value) => value.Trim().ToLowerInvariant() switch
+    private static void RequireCheckpoint(ResolvedModel model)
     {
-        "sam2-tiny" => Sam2ModelVariant.Sam2Tiny,
-        "sam2-small" => Sam2ModelVariant.Sam2Small,
-        "sam2.1-tiny" => Sam2ModelVariant.Sam21Tiny,
-        "sam2.1-small" => Sam2ModelVariant.Sam21Small,
-        _ => throw new ArgumentException("Models:Sam2Variant must be sam2-tiny, sam2-small, sam2.1-tiny, or sam2.1-small."),
-    };
-
-    private static void RequireCheckpoint(string path, string model)
-    {
-        if (!File.Exists(path)) throw new FileNotFoundException($"{model} checkpoint was not found. Configure Models:WeightsDirectory or its checkpoint filename.", path);
+        if (!model.Configured)
+            throw new ArgumentException($"{model.DisplayName} is not configured. Set Models:{ConfigurationKey(model.Id)}:Directory and Name.");
+        if (!model.Available)
+            throw new FileNotFoundException($"{model.DisplayName} checkpoint was not found. Check Models:{ConfigurationKey(model.Id)}:Directory and Name.", model.CheckpointPath);
     }
 
-    private static ModelAvailability Availability(string id, string name, string path, string promptType) =>
-        new(id, name, path, File.Exists(path), promptType);
+    private static ModelAvailability Availability(ResolvedModel model) => new(
+        model.Id,
+        string.IsNullOrWhiteSpace(model.Name) ? model.DisplayName : $"{model.DisplayName} ({model.Name})",
+        model.CheckpointPath,
+        model.Available,
+        model.PromptType,
+        !model.Configured ? "未配置" : model.Available ? "可用" : "权重不存在");
+
+    private static string ConfigurationKey(string id) => id switch
+    {
+        "sam" => "Sam", "sam2" => "Sam2", "sam2.1" => "Sam21", "sam3" => "Sam3", "sam3.1" => "Sam31", _ => id,
+    };
 
     public void Dispose()
     {
-        _sam1Model?.Dispose();
+        _samModel?.Dispose();
         _sam2?.Dispose();
+        _sam21?.Dispose();
         _sam3?.Dispose();
+        _sam31?.Dispose();
         _gate.Dispose();
     }
 }
