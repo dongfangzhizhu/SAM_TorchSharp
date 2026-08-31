@@ -210,7 +210,6 @@ public class Sam3CheckpointLoaderBinary
                 rest.StartsWith("vision_layer_norm.")) return null;
             return MapGeometryEncoderKey(ckptKey);
         }
-        if (ckptKey.Contains("mask_decoder.semantic_projection") || ckptKey.Contains("mask_decoder.instance_projection")) return null;
         if (ckptKey.StartsWith("mask_decoder.")) return MapMaskDecoderKey(ckptKey);
         if (ckptKey.StartsWith("dot_product_scoring.")) return MapDotProductScoringKey(ckptKey);
         return null;
@@ -357,7 +356,6 @@ public class Sam3CheckpointLoaderBinary
 
         if (rest.StartsWith("mask_decoder."))
         {
-            if (rest.Contains("semantic_projection") || rest.Contains("instance_projection")) return null;
             return MapMaskDecoderKey($"mask_decoder.{rest}");
         }
 

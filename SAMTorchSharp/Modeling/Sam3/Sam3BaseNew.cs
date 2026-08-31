@@ -12,7 +12,7 @@ namespace SAMTorchSharp.Modeling.Sam3;
 
 /// <summary>
 /// SAM3 Base model rebuilt to match the checkpoint architecture.
-/// This checkpoint is a DETECTOR-ONLY model (no segmentation head / MultiplexMaskDecoder).
+/// Implements text-conditioned image detection and instance segmentation.
 ///
 /// Architecture:
 ///   - Vision Backbone: Standard ViT (32 layers, embed_dim=1024, patch_size=14, image_size=1008)
@@ -21,7 +21,7 @@ namespace SAMTorchSharp.Modeling.Sam3;
 ///   - DETR Encoder: 6 layers, d_model=256, MLP hidden=2048
 ///   - DETR Decoder: 6 layers, d_model=256, MLP hidden=2048, with presence token + box RPB
 ///   - Geometry Encoder: 3 transformer layers, d_model=256
-///   - Mask Decoder: pixel_decoder + mask_embedder + prompt_cross_attn (produces mask tokens, not masks)
+    ///   - Mask Decoder: universal segmentation head producing per-query mask logits
 ///   - Scoring: Dot-product scoring with text_mlp (text-object similarity)
 /// </summary>
 public class Sam3BaseNew : Module
@@ -91,6 +91,14 @@ public class Sam3BaseNew : Module
     /// </summary>
     public Tuple<List<Tensor>, List<Tensor>> ForwardBackbone(Tensor images)
     {
+        var (allFpnFeatures, allPosEmbeddings) = ForwardAllBackboneFeatures(images);
+        return Tuple.Create(
+            allFpnFeatures.Take(num_feature_levels).ToList(),
+            allPosEmbeddings.Take(num_feature_levels).ToList());
+    }
+
+    private Tuple<List<Tensor>, List<Tensor>> ForwardAllBackboneFeatures(Tensor images)
+    {
         // 1. ViT backbone: [B, 3, H, W] -> [B, num_tokens, embed_dim]
         var vit_features = vision_backbone.forward(images);
         var B = vit_features.size(0);
@@ -111,12 +119,7 @@ public class Sam3BaseNew : Module
             allPosEmbeddings.Add(pos);
         }
 
-        // Return only the first numFeatureLevels for DETR encoder
-        // Level 3 (highest res) is used separately by mask decoder
-        var fpnFeatures = allFpnFeatures.Take(this.num_feature_levels).ToList();
-        var posEmbeds = allPosEmbeddings.Take(this.num_feature_levels).ToList();
-
-        return Tuple.Create(fpnFeatures, posEmbeds);
+        return Tuple.Create(allFpnFeatures, allPosEmbeddings);
     }
 
     /// <summary>
@@ -129,7 +132,9 @@ public class Sam3BaseNew : Module
         Sam3Prompt? geometricPrompt = null)
     {
         // 1. Run vision backbone
-        var (imgFeats, imgPosEmbeds) = ForwardBackbone(images);
+        var (segmentationFeatures, allPosEmbeds) = ForwardAllBackboneFeatures(images);
+        var imgFeats = segmentationFeatures.Take(num_feature_levels).ToList();
+        var imgPosEmbeds = allPosEmbeds.Take(num_feature_levels).ToList();
 
         // 2. Get text features
         Tensor? langFeat = null;
@@ -186,17 +191,11 @@ public class Sam3BaseNew : Module
         var resultDict = decoderResult.Item1;
         var hs = decoderResult.Item2;
 
-        // 7. Run mask decoder to produce mask tokens (NOT masks - this checkpoint is detector-only)
-        // Use the highest resolution FPN feature for mask token production
         if (imgFeats.Count > 0)
         {
-            var highestResFeat = imgFeats[imgFeats.Count - 1];  // [bs, d_model, H, W]
-            // hs: [bs, nq, d_model] -> permute to [nq, bs, d_model] for prompt cross-attn
-            var hs_seq_first = hs.permute(new long[] { 1, 0, 2 });
-            var (maskTokens, semanticFeats, instanceFeats) = mask_decoder.forward(hs_seq_first, highestResFeat);
-            resultDict["mask_tokens"] = maskTokens;
-            resultDict["semantic_feats"] = semanticFeats;
-            resultDict["instance_feats"] = instanceFeats;
+            var (maskLogits, semanticLogits) = mask_decoder.forward(hs, segmentationFeatures, memTensor, prompt, promptMask);
+            resultDict["pred_masks"] = maskLogits;
+            resultDict["semantic_seg"] = semanticLogits;
         }
 
         return resultDict;
@@ -213,9 +212,12 @@ public class Sam3BaseNew : Module
     {
         var gp = geometricPrompt ?? new Sam3Prompt();
 
+        var detectorFeatures = imgFeats.Take(num_feature_levels).ToList();
+        var detectorPositions = imgPosEmbeds.Take(num_feature_levels).ToList();
+
         // 1. Encode geometric prompts
-        var (geoFeatsTensor, geoMaskTensor) = geometry_encoder.forward(gp, imgFeats,
-            imgFeats.Select(f => new long[] { f.size(2), f.size(3) }).ToList());
+        var (geoFeatsTensor, geoMaskTensor) = geometry_encoder.forward(gp, detectorFeatures,
+            detectorFeatures.Select(f => new long[] { f.size(2), f.size(3) }).ToList());
 
         // 2. Get text features
         Tensor? langFeat = null;
@@ -246,24 +248,20 @@ public class Sam3BaseNew : Module
         }
 
         // 4. Run transformer encoder
-        var encoderMemory = transformer_encoder.forward(imgFeats, null, imgPosEmbeds);
+        var encoderMemory = transformer_encoder.forward(detectorFeatures, null, detectorPositions);
         var memTensor = (Tensor)encoderMemory["memory"];
         var posEmbed = (Tensor)encoderMemory["pos_embed"];
 
         // 5. Run decoder (pass imgFeats for spatial shapes)
-        var decoderResult = run_decoder(imgFeats, posEmbed, memTensor, null, prompt, promptMask);
+        var decoderResult = run_decoder(detectorFeatures, posEmbed, memTensor, null, prompt, promptMask);
         var resultDict = decoderResult.Item1;
         var hs = decoderResult.Item2;
 
-        // 6. Run mask decoder for mask tokens (not masks)
-        if (imgFeats.Count > 0)
+        if (imgFeats.Count == 4)
         {
-            var highestResFeat = imgFeats[imgFeats.Count - 1];
-            var hs_seq_first = hs.permute(new long[] { 1, 0, 2 });
-            var (maskTokens, semanticFeats, instanceFeats) = mask_decoder.forward(hs_seq_first, highestResFeat);
-            resultDict["mask_tokens"] = maskTokens;
-            resultDict["semantic_feats"] = semanticFeats;
-            resultDict["instance_feats"] = instanceFeats;
+            var (maskLogits, semanticLogits) = mask_decoder.forward(hs, imgFeats, memTensor, prompt, promptMask);
+            resultDict["pred_masks"] = maskLogits;
+            resultDict["semantic_seg"] = semanticLogits;
         }
 
         return resultDict;

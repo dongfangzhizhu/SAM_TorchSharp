@@ -18,18 +18,18 @@ namespace SAMTorchSharp.Modeling.Sam3;
 public class Sam3PixelDecoder : Module
 {
     private readonly List<Conv2d> conv_layers;
-    private readonly List<LayerNorm> norms;
+    private readonly List<GroupNorm> norms;
 
     public Sam3PixelDecoder(int d_model = 256)
         : base(nameof(Sam3PixelDecoder))
     {
         conv_layers = new List<Conv2d>();
-        norms = new List<LayerNorm>();
+        norms = new List<GroupNorm>();
 
         for (int i = 0; i < 3; i++)
         {
             conv_layers.Add(Conv2d(d_model, d_model, kernelSize: 3, padding: 1));
-            norms.Add(LayerNorm(d_model));
+            norms.Add(GroupNorm(8, d_model));
         }
 
         for (int i = 0; i < conv_layers.Count; i++)
@@ -41,19 +41,19 @@ public class Sam3PixelDecoder : Module
         RegisterComponents();
     }
 
-    public Tensor forward(Tensor x)
+    public Tensor forward(IReadOnlyList<Tensor> features)
     {
+        if (features.Count != conv_layers.Count + 1)
+            throw new ArgumentException($"SAM 3 pixel decoder requires {conv_layers.Count + 1} FPN features.", nameof(features));
+
+        var x = features[^1];
         for (int i = 0; i < conv_layers.Count; i++)
         {
+            var lateral = features[features.Count - i - 2];
+            x = functional.interpolate(x, size: new long[] { lateral.size(2), lateral.size(3) }, mode: InterpolationMode.Nearest);
+            x = x + lateral;
             x = conv_layers[i].forward(x);
-            var B = x.size(0);
-            var C = x.size(1);
-            var H = x.size(2);
-            var W = x.size(3);
-            var x_perm = x.permute(new long[] { 0, 2, 3, 1 });
-            x_perm = norms[i].forward(x_perm);
-            x = x_perm.permute(new long[] { 0, 3, 1, 2 });
-            x = functional.gelu(x);
+            x = functional.relu(norms[i].forward(x));
         }
         return x;
     }
@@ -131,36 +131,33 @@ public class Sam3PromptCrossAttn : Module
         RegisterComponents();
     }
 
-    public Tensor forward(Tensor query, Tensor key_value)
+    public Tensor forward(Tensor query, Tensor keyValue, Tensor? keyPaddingMask = null)
     {
-        // query: [nq, bs, d_model]
-        // key_value: [bs, d_model, H, W]
+        // query: [target length, batch, d_model]
+        // keyValue: [source length, batch, d_model]
         var B = query.size(1);
         var N = query.size(0);
-        var H = key_value.size(2);
-        var W = key_value.size(3);
-
-        // Flatten spatial dims: [bs, d_model, H, W] -> [bs, d_model, H*W] -> [bs, d_model, H*W]
-        var kv_flat = key_value.flatten(2);  // [bs, d_model, H*W]
-        kv_flat = kv_flat.transpose(1, 2);   // [bs, H*W, d_model]
-
-        // Transpose to seq-first: [H*W, bs, d_model]
-        var kv_seq = kv_flat.transpose(0, 1);
+        var S = keyValue.size(0);
 
         // Project query
         var q = q_proj.forward(query);  // [nq, bs, d_model]
-        var k = k_proj.forward(kv_seq);  // [H*W, bs, d_model]
-        var v = v_proj.forward(kv_seq);  // [H*W, bs, d_model]
+        var k = k_proj.forward(keyValue);
+        var v = v_proj.forward(keyValue);
 
         // Split heads: [N, B, d_model] -> [B, nhead, N, hd]
         var q_h = q.reshape(new long[] { N, B, nhead, d_model / nhead }).transpose(0, 1).transpose(1, 2);  // [bs, nhead, nq, hd]
-        var k_h = k.reshape(new long[] { H * W, B, nhead, d_model / nhead }).transpose(0, 1).transpose(1, 2);  // [bs, nhead, HW, hd]
-        var v_h = v.reshape(new long[] { H * W, B, nhead, d_model / nhead }).transpose(0, 1).transpose(1, 2);  // [bs, nhead, HW, hd]
+        var k_h = k.reshape(new long[] { S, B, nhead, d_model / nhead }).transpose(0, 1).transpose(1, 2);
+        var v_h = v.reshape(new long[] { S, B, nhead, d_model / nhead }).transpose(0, 1).transpose(1, 2);
 
         var scale = 1.0f / (float)Math.Sqrt(d_model / nhead);
         // k_h.T: [bs, nhead, hd, HW]
         var k_h_t = k_h.transpose(2, 3);
         var attn_weights = (q_h * scale).matmul(k_h_t);  // [bs, nhead, nq, HW]
+        if (keyPaddingMask is not null)
+        {
+            var mask = keyPaddingMask.ndim == 3 ? keyPaddingMask.squeeze(0) : keyPaddingMask;
+            attn_weights = attn_weights.masked_fill(mask.logical_not().unsqueeze(1).unsqueeze(1), float.NegativeInfinity);
+        }
         var attn_probs = functional.softmax(attn_weights, dim: 3);
         var attn_out = attn_probs.matmul(v_h);  // [bs, nhead, nq, hd]
 
@@ -175,16 +172,13 @@ public class Sam3PromptCrossAttn : Module
 }
 
 /// <summary>
-/// Full Mask Decoder for SAM3 (detector-only version).
-/// This checkpoint's mask_decoder produces mask tokens, not masks.
-/// The actual segmentation head (MultiplexMaskDecoder) is not in this checkpoint.
+/// SAM 3 universal segmentation head used by the image detector.
 ///
 /// Components:
-/// - pixel_decoder: 3 conv layers processing highest-res FPN feature
-/// - prompt_cross_attn: cross-attention between object queries and spatial features
-/// - mask_embedder: MLP to produce mask tokens
-/// - semantic_projection: projects mask tokens to semantic space
-/// - instance_projection: projects mask tokens to instance space
+/// - pixel_decoder: top-down fusion of four FPN levels
+/// - prompt_cross_attn: cross-attention from visual encoder tokens to the prompt
+/// - mask_embedder: MLP projecting object queries
+/// - semantic_projection/instance_projection: 1x1 convolutions over fused pixels
 /// </summary>
 public class Sam3MaskDecoder : Module
 {
@@ -192,8 +186,8 @@ public class Sam3MaskDecoder : Module
     private readonly Sam3MaskEmbedder mask_embedder;
     private readonly Sam3PromptCrossAttn prompt_cross_attn;
     private readonly LayerNorm prompt_cross_attn_norm;
-    private readonly Linear semantic_projection;
-    private readonly Linear instance_projection;
+    private readonly Conv2d semantic_projection;
+    private readonly Conv2d instance_projection;
     private readonly int d_model;
 
     public Sam3MaskDecoder(int d_model = 256)
@@ -205,43 +199,43 @@ public class Sam3MaskDecoder : Module
         prompt_cross_attn = new Sam3PromptCrossAttn(d_model);
         prompt_cross_attn_norm = LayerNorm(d_model);
         mask_embedder = new Sam3MaskEmbedder(d_model);
-        semantic_projection = Linear(d_model, d_model);
-        instance_projection = Linear(d_model, d_model);
+        semantic_projection = Conv2d(d_model, 1, kernelSize: 1);
+        instance_projection = Conv2d(d_model, d_model, kernelSize: 1);
 
         RegisterComponents();
     }
 
     /// <summary>
-    /// Forward pass producing mask tokens (not masks).
-    /// obj_queries: [nq, bs, d_model] - object queries from decoder (last layer)
-    /// img_feats: [bs, d_model, H, W] - highest resolution FPN feature
-    /// Returns: mask_tokens [bs, nq, d_model], semantic_feats [bs, nq, d_model], instance_feats [bs, nq, d_model]
+    /// Forward pass producing low-resolution mask logits.
     /// </summary>
-    public Tuple<Tensor, Tensor, Tensor> forward(
-        Tensor obj_queries,
-        Tensor img_feat)
+    public Tuple<Tensor, Tensor> forward(
+        Tensor objectQueries,
+        IReadOnlyList<Tensor> imageFeatures,
+        Tensor encoderHiddenStates,
+        Tensor prompt,
+        Tensor? promptMask)
     {
-        // obj_queries: [nq, bs, d_model]
-        var N = obj_queries.size(0);
-        var B = obj_queries.size(1);
-        var d_model = (int)obj_queries.size(2);
+        if (imageFeatures.Count != 4)
+            throw new ArgumentException("SAM 3 segmentation requires four FPN feature levels.", nameof(imageFeatures));
 
-        // Pixel decoder processes the highest res feature
-        var pixel_feat = pixel_decoder.forward(img_feat);  // [bs, d_model, H, W]
+        var normalizedVisualTokens = prompt_cross_attn_norm.forward(encoderHiddenStates);
+        var attendedVisualTokens = prompt_cross_attn.forward(normalizedVisualTokens, prompt, promptMask);
+        var visualTokens = attendedVisualTokens + encoderHiddenStates;
 
-        // Prompt cross attention
-        var cross_attn_out = prompt_cross_attn.forward(obj_queries, img_feat);
-        cross_attn_out = prompt_cross_attn_norm.forward(cross_attn_out);  // [nq, bs, d_model]
+        var lastFeature = imageFeatures[^1];
+        var spatialSize = lastFeature.size(2) * lastFeature.size(3);
+        var encodedLastFeature = visualTokens.narrow(0, 0, spatialSize)
+            .permute(1, 2, 0)
+            .reshape(lastFeature.shape);
+        var decoderFeatures = imageFeatures.ToArray();
+        decoderFeatures[^1] = encodedLastFeature;
 
-        // Mask embedder processes the cross-attention output
-        var cross_attn_perm = cross_attn_out.permute(new long[] { 1, 0, 2 });  // [bs, nq, d_model]
-        var mask_tokens = mask_embedder.forward(cross_attn_perm);  // [bs, nq, d_model]
-
-        // Semantic and instance projections
-        var semantic_feats = semantic_projection.forward(mask_tokens);  // [bs, nq, d_model]
-        var instance_feats = instance_projection.forward(mask_tokens);  // [bs, nq, d_model]
-
-        return Tuple.Create(mask_tokens, semantic_feats, instance_feats);
+        var pixelEmbedding = pixel_decoder.forward(decoderFeatures);
+        var instanceEmbedding = instance_projection.forward(pixelEmbedding);
+        var maskEmbedding = mask_embedder.forward(objectQueries);
+        var maskLogits = einsum("bqc,bchw->bqhw", maskEmbedding, instanceEmbedding);
+        var semanticLogits = semantic_projection.forward(pixelEmbedding);
+        return Tuple.Create(maskLogits, semanticLogits);
     }
 }
 
