@@ -77,6 +77,37 @@ public sealed class Sam2AutomaticMaskGeneratorTests
     }
 
     [Fact]
+    public void SupportsMultiLayerCropsAndMaskToMaskRefinement()
+    {
+        using var model = BuildSam2.BuildSam2HieraTiny(imageSize: 64);
+        using var generator = new SAM2AutomaticMaskGenerator(
+            model,
+            pointsPerSide: 1,
+            pointsPerBatch: 4,
+            predIouThresh: -1,
+            stabilityScoreThreshold: -1,
+            boxNmsThresh: float.PositiveInfinity,
+            cropNLayers: 1,
+            cropNmsThresh: float.PositiveInfinity,
+            useM2M: true,
+            multimaskOutput: true);
+        using var image = rand(32, 48, 3);
+
+        var records = generator.Generate(image);
+
+        Assert.NotEmpty(records);
+        Assert.All(records, record =>
+        {
+            Assert.NotNull(record.BinaryMask);
+            Assert.Equal(32, record.BinaryMask!.GetLength(0));
+            Assert.Equal(48, record.BinaryMask.GetLength(1));
+            Assert.Equal(4, record.CropBox.Length);
+            Assert.True(float.IsFinite(record.StabilityScore));
+        });
+        Assert.Contains(records, record => record.CropBox[2] < 48 || record.CropBox[3] < 32);
+    }
+
+    [Fact]
     public void MaskDataFiltersRlesByNmsIndicesWithoutTreatingIndicesAsBooleans()
     {
         var data = new MaskData();

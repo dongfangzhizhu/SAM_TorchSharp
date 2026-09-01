@@ -256,23 +256,33 @@ namespace SAMTorchSharp
             data.Set("points", flatPoints);
             data.Set("low_res_masks", flatLowRes);
 
-            if (!_useM2M)
+            if (_useM2M)
             {
-                if (_predIouThresh > 0.0)
-                {
-                    var iuKeep = data.GetTensor("iou_preds") > _predIouThresh;
-                    data.Filter(iuKeep);
-                }
+                using var refinementLabels = ones(data.GetTensor("points").size(0), dtype: ScalarType.Int32);
+                var (refinedMasks, refinedIous, _) = _predictor.Predict(
+                    pointCoords: data.GetTensor("points").unsqueeze(1),
+                    pointLabels: refinementLabels.unsqueeze(1),
+                    maskInput: data.GetTensor("low_res_masks").unsqueeze(1),
+                    multimaskOutput: false,
+                    returnLogits: true);
+                data.Set("masks", refinedMasks.squeeze(1));
+                data.Set("iou_preds", refinedIous.squeeze(1));
+            }
 
-                var stabilityScores = AMGUtiities.CalculateStabilityScore(
-                    data.GetTensor("masks"), _maskThreshold, (float)_stabilityScoreOffset);
-                data.Set("stability_score", stabilityScores);
+            if (_predIouThresh > 0.0)
+            {
+                var iuKeep = data.GetTensor("iou_preds") > _predIouThresh;
+                data.Filter(iuKeep);
+            }
 
-                if (_stabilityScore > 0.0)
-                {
-                    var stKeep = data.GetTensor("stability_score") >= _stabilityScore;
-                    data.Filter(stKeep);
-                }
+            var stabilityScores = AMGUtiities.CalculateStabilityScore(
+                data.GetTensor("masks"), _maskThreshold, (float)_stabilityScoreOffset);
+            data.Set("stability_score", stabilityScores);
+
+            if (_stabilityScore > 0.0)
+            {
+                var stKeep = data.GetTensor("stability_score") >= _stabilityScore;
+                data.Filter(stKeep);
             }
 
             var threshed = (data.GetTensor("masks") > _maskThreshold);
