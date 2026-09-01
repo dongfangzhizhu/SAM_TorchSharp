@@ -32,6 +32,7 @@ internal static class Program
                 "sam2-checkpoint" => RunSam2Checkpoint(options),
                 "sam2-image" => RunSam2Image(options),
                 "sam2-video" => RunSam2Video(options),
+                "sam3-checkpoint" => RunSam3Checkpoint(options),
                 "sam3-run" => RunSam3(options),
                 "self-test" => RunSelfTest(options),
                 _ => Fail($"Unknown command '{args[0]}'. Run with --help for usage.", UsageError),
@@ -165,6 +166,28 @@ internal static class Program
 
         Console.WriteLine($"Inference completed in {stopwatch.ElapsedMilliseconds} ms.");
         return 0;
+    }
+
+    private static int RunSam3Checkpoint(CliOptions options)
+    {
+        var checkpointPath = options.RequirePath("checkpoint");
+        var outputDirectory = Path.GetFullPath(options.Get("output") ?? Environment.CurrentDirectory);
+        var minCoverage = options.GetDouble("min-coverage", 100, min: 0, max: 100);
+        options.EnsureNoUnused();
+
+        if (Sam3CheckpointLoaderNew.DetectFormat(checkpointPath) != Sam3CheckpointFormat.OfficialSafetensors)
+            throw new CliException("sam3-checkpoint requires an official .safetensors checkpoint.");
+
+        Console.WriteLine("Building SAM3 detector model...");
+        using var model = new BuildSam3New().Build();
+        Console.WriteLine($"Loading checkpoint: {checkpointPath}");
+        var report = new Sam3CheckpointLoaderNew().LoadModelWithReport(model, checkpointPath, CPU);
+        WriteSam3CheckpointReport(outputDirectory, report);
+        Console.WriteLine($"Checkpoint: loaded={report.LoadedKeys.Count}, skipped={report.SkippedKeys.Count}, " +
+                          $"missing={report.MissingKeys.Count}, shape_mismatch={report.ShapeMismatches.Count}, " +
+                          $"coverage={report.Coverage:F2}%");
+        return report.Coverage >= minCoverage ? 0 :
+            Fail($"Checkpoint coverage {report.Coverage:F2}% is below required {minCoverage:F2}%.", ValidationError);
     }
 
     internal static string WriteSam3CheckpointReport(
@@ -318,6 +341,7 @@ internal static class Program
               ConsistencyTest sam2-checkpoint --variant <name> --checkpoint <model.pt|model.safetensors> [options]
               ConsistencyTest sam2-image --variant <name> --checkpoint <model.pt|model.safetensors> --image <image.npy> [prompts] [options]
               ConsistencyTest sam2-video --variant <name> --checkpoint <model.pt|model.safetensors> --vectors <directory> [options]
+              ConsistencyTest sam3-checkpoint --checkpoint <model.safetensors> [options]
               ConsistencyTest sam3-run --checkpoint <model.safetensors|model.bin> [options]
 
             sam2-checkpoint options:
@@ -335,6 +359,10 @@ internal static class Program
               --device cpu              Execution device; CPU is currently the only supported runtime
               --multimask <true|false>  Return three candidate masks instead of one (default: true)
               --return-logits <bool>    Return full-resolution logits instead of binary masks (default: false)
+
+            sam3-checkpoint options:
+              --output <directory>       Report directory (default: current directory)
+              --min-coverage <percent>   Fail below loadable-tensor coverage (default: 100)
 
             sam3-run options:
               --image <file.npy>          Optional normalized float32 [1,3,1008,1008] image

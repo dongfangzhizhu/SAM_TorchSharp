@@ -91,6 +91,19 @@ the report still records maximum and mean errors for every frame and intermediat
 
 ## Run SAM3 text-conditioned inference
 
+Validate official safetensors loading without running inference:
+
+```powershell
+dotnet run --project .\ConsistencyTest.csproj -- sam3-checkpoint `
+  --checkpoint ..\..\checkpoints\sam3\model.safetensors `
+  --output ..\testdata\sam3-checkpoint `
+  --min-coverage 100
+```
+
+The command writes `checkpoint-report.json` and exits with code 3 when loadable-tensor coverage is
+below the requested threshold. Tracker tensors and other explicitly unsupported tensors remain in
+`SkippedKeys` and do not reduce coverage.
+
 ```powershell
 dotnet run --project .\ConsistencyTest.csproj -- sam3-run `
   --checkpoint ..\..\checkpoints\sam3\model.safetensors `

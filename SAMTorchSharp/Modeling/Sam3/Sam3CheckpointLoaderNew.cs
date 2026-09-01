@@ -102,13 +102,6 @@ public class Sam3CheckpointLoaderNew
             var ckptKey = kvp.Key;
             var tensor = kvp.Value.to(dev);
 
-            // Special handling: FPN scale_layers weights are transposed in checkpoint
-            // Checkpoint stores [in_channels, out_channels, kH, kW], PyTorch expects [out_channels, in_channels, kH, kW]
-            if (ckptKey.Contains("fpn_layers") && ckptKey.Contains("scale_layers") && ckptKey.EndsWith(".weight"))
-            {
-                tensor = tensor.transpose(0, 1);
-            }
-
             var modelKey = MapOfficialKey(ckptKey);
 
             if (modelKey == null)
@@ -175,11 +168,16 @@ public class Sam3CheckpointLoaderNew
             var level = parts[0];
             var param = string.Join(".", parts.Skip(1));
 
-            // Normalize scale_layers.X to scale_layers_X format
+            // The official neck uses a Sequential for transposed-convolution scaling.
+            // Its parameterized entries are indices 0 and 2 for level 0, and index 0 for level 1.
             if (param.StartsWith("scale_layers."))
             {
                 var sub = param.Substring("scale_layers.".Length);
-                param = "scale_layers_" + sub;
+                param = sub.StartsWith("0.")
+                    ? "deconv1." + sub.Substring(2)
+                    : sub.StartsWith("2.")
+                        ? "deconv2." + sub.Substring(2)
+                        : param;
             }
 
             return $"fpn_neck.fpn_layer_{level}.{param}";
@@ -669,7 +667,7 @@ public class Sam3CheckpointLoaderNew
         var rest = ckptKey.Substring("dot_product_scoring.".Length);
         if (rest.StartsWith("text_mlp.layer"))
         {
-            var sub = rest.Replace("text_mlp.layer1", "text_mlp_layer1").Replace("text_mlp.layer2", "text_mlp_layer2");
+            var sub = rest.Replace("text_mlp.layer1", "text_mlp.0").Replace("text_mlp.layer2", "text_mlp.1");
             return $"dot_product_scoring.{sub}";
         }
         if (rest == "text_mlp_out_norm.weight")

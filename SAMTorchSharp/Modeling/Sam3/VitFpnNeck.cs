@@ -64,8 +64,8 @@ public class FpnLevelNew : Module
             deconv1 = ConvTranspose2d(in_channels, in_channels / 2, kernelSize: 2, stride: 2);
             deconv2 = ConvTranspose2d(in_channels / 2, out_channels, kernelSize: 2, stride: 2);
             // After deconv: [B, 256, 288, 288]
-            proj1 = Conv2d(out_channels, out_channels, kernelSize: 1, bias: false);
-            proj2 = Conv2d(out_channels, out_channels, kernelSize: 3, padding: 1, bias: false);
+            proj1 = Conv2d(out_channels, out_channels, kernelSize: 1);
+            proj2 = Conv2d(out_channels, out_channels, kernelSize: 3, padding: 1);
         }
         else if (level == 1)
         {
@@ -74,8 +74,8 @@ public class FpnLevelNew : Module
             deconv1 = ConvTranspose2d(in_channels, in_channels / 2, kernelSize: 2, stride: 2);
             deconv2 = null;
             // After deconv: [B, 512, 144, 144]
-            proj1 = Conv2d(in_channels / 2, out_channels, kernelSize: 1, bias: false);
-            proj2 = Conv2d(out_channels, out_channels, kernelSize: 3, padding: 1, bias: false);
+            proj1 = Conv2d(in_channels / 2, out_channels, kernelSize: 1);
+            proj2 = Conv2d(out_channels, out_channels, kernelSize: 3, padding: 1);
         }
         else if (level == 2)
         {
@@ -84,8 +84,8 @@ public class FpnLevelNew : Module
             deconv1 = null!;
             deconv2 = null;
             mp = null!;
-            proj1 = Conv2d(in_channels, out_channels, kernelSize: 1, bias: false);
-            proj2 = Conv2d(out_channels, out_channels, kernelSize: 3, padding: 1, bias: false);
+            proj1 = Conv2d(in_channels, out_channels, kernelSize: 1);
+            proj2 = Conv2d(out_channels, out_channels, kernelSize: 3, padding: 1);
         }
         else
         {
@@ -94,8 +94,8 @@ public class FpnLevelNew : Module
             mp = MaxPool2d(2, 2);
             deconv1 = null!;
             deconv2 = null;
-            proj1 = Conv2d(in_channels, out_channels, kernelSize: 1, bias: false);
-            proj2 = Conv2d(out_channels, out_channels, kernelSize: 3, padding: 1, bias: false);
+            proj1 = Conv2d(in_channels, out_channels, kernelSize: 1);
+            proj2 = Conv2d(out_channels, out_channels, kernelSize: 3, padding: 1);
         }
 
         RegisterComponents();
