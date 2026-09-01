@@ -238,4 +238,3 @@ build_readout.txt
 build_run.txt
 cs_run*.txt
 ConsistencyTest/cs_run*.txt
-ConsistencyTest/missing_keys.txt
