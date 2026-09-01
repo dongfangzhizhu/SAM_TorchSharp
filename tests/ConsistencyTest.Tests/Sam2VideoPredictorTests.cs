@@ -153,4 +153,25 @@ public sealed class Sam2VideoPredictorTests
         initialPropagation.ForEach(result => result.VideoResMasks.Dispose());
         finalPropagation.ForEach(result => result.VideoResMasks.Dispose());
     }
+
+    [Fact]
+    public void NonOverlapMasksKeepsAtMostOneForegroundObjectPerPixel()
+    {
+        using var model = BuildSam2.BuildSam2HieraTiny(imageSize: 64);
+        using var predictor = new SAM2VideoPredictor(model, nonOverlapMasks: true);
+        using var frames = rand(1, 3, 64, 64);
+        using var mask = ones(32, 32);
+        var state = predictor.InitState(frames, originalHeight: 32, originalWidth: 32);
+
+        var first = predictor.AddNewMask(state, 0, objId: 10, mask);
+        var second = predictor.AddNewMask(state, 0, objId: 20, mask);
+
+        using var foregroundCount = (second.VideoResMasks > 0)
+            .to(ScalarType.Int32)
+            .sum(dim: 0);
+        Assert.True((foregroundCount <= 1).all().item<bool>());
+        Assert.True((second.VideoResMasks.narrow(0, 1, 1) <= -10).all().item<bool>());
+        first.VideoResMasks.Dispose();
+        second.VideoResMasks.Dispose();
+    }
 }

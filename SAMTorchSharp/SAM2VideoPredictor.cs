@@ -831,10 +831,23 @@ namespace SAMTorchSharp
 
             if (_nonOverlapMasks)
             {
-                // Placeholder: non-overlapping constraints not yet implemented
+                videoResMasks = ApplyNonOverlappingConstraints(videoResMasks);
             }
 
             return (anyResMasks, videoResMasks);
+        }
+
+        private static Tensor ApplyNonOverlappingConstraints(Tensor predMasks)
+        {
+            var batchSize = predMasks.size(0);
+            if (batchSize == 1)
+                return predMasks;
+
+            var maxObjectIndices = predMasks.argmax(dim: 0, keepdim: true);
+            var objectIndices = arange(batchSize, dtype: ScalarType.Int64, device: predMasks.device)
+                .reshape(batchSize, 1, 1, 1);
+            var keep = maxObjectIndices == objectIndices;
+            return where(keep, predMasks, predMasks.clamp(max: -10.0));
         }
 
         private void _PropagateInVideoPreflight(Dictionary<string, object> state)
