@@ -153,7 +153,13 @@ public class Sam3TransformerDecoderLayerNew : Module
         RegisterComponents();
     }
 
-    private Tensor dot_product_attention(Tensor q, Tensor k, Tensor v, Tensor? rpb_bias = null, bool add_rpb_bias = false)
+    private Tensor dot_product_attention(
+        Tensor q,
+        Tensor k,
+        Tensor v,
+        Tensor? rpb_bias = null,
+        bool add_rpb_bias = false,
+        Tensor? keyPaddingMask = null)
     {
         // q, k, v: [B, seq, d_model] (batch-first)
         var B = q.size(0);
@@ -174,6 +180,16 @@ public class Sam3TransformerDecoderLayerNew : Module
         {
             // rpb_bias: [bs, nhead, nq, HW] -> add to attn [bs, nhead, nq, HW]
             attn = attn + rpb_bias;
+        }
+
+        if (keyPaddingMask is not null)
+        {
+            var mask = keyPaddingMask.ndim == 3 ? keyPaddingMask.squeeze(0) : keyPaddingMask;
+            if (mask.shape is not [var maskBatch, var maskSequence] || maskBatch != B || maskSequence != seq_k)
+                throw new ArgumentException("SAM 3 text padding mask must have shape [batch, sequence].");
+            if (mask.all(dim: 1).any().item<bool>())
+                throw new ArgumentException("SAM 3 text padding mask must leave at least one token unmasked per batch.");
+            attn = attn.masked_fill(mask.unsqueeze(1).unsqueeze(1), float.NegativeInfinity);
         }
 
         attn = functional.softmax(attn, dim: 3);
@@ -231,7 +247,7 @@ public class Sam3TransformerDecoderLayerNew : Module
         k_t = k_t.transpose(0, 1);
         v_t = v_t.transpose(0, 1);
 
-        var text_out = dot_product_attention(q_t, k_t, v_t);
+        var text_out = dot_product_attention(q_t, k_t, v_t, keyPaddingMask: text_attention_mask);
         text_out = text_out.transpose(0, 1);
         text_out = ca_text_o_proj.forward(text_out);
 

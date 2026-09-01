@@ -22,7 +22,7 @@ public sealed class Sam3SegmentationHeadTests
         using var objectQueries = randn(1, 3, 8);
         using var encoderHiddenStates = randn(1, 1, 8);
         using var prompt = randn(2, 1, 8);
-        using var promptMask = ones(1, 2, dtype: ScalarType.Bool);
+        using var promptMask = zeros(1, 2, dtype: ScalarType.Bool);
         using var level0 = randn(1, 8, 8, 8);
         using var level1 = randn(1, 8, 4, 4);
         using var level2 = randn(1, 8, 2, 2);
@@ -41,6 +41,46 @@ public sealed class Sam3SegmentationHeadTests
             Assert.Equal([1L, 1L, 8L, 8L], semantic.shape);
             Assert.True(isfinite(masks).all().item<bool>());
         }
+    }
+
+    [Fact]
+    public void PromptAttentionIgnoresPaddingTokensAndRejectsAllPadding()
+    {
+        manual_seed(23);
+        using var attention = new Sam3PromptCrossAttn(d_model: 8, nhead: 2);
+        using var query = randn(3, 1, 8);
+        using var validToken = randn(1, 1, 8);
+        using var paddingA = zeros(2, 1, 8);
+        using var paddingB = full([2, 1, 8], 1000f);
+        using var keyValueA = cat([validToken, paddingA], dim: 0);
+        using var keyValueB = cat([validToken, paddingB], dim: 0);
+        using var paddingMask = tensor(new bool[,] { { false, true, true } });
+        using var outputA = attention.forward(query, keyValueA, paddingMask);
+        using var outputB = attention.forward(query, keyValueB, paddingMask);
+
+        Assert.True(allclose(outputA, outputB, rtol: 1e-5, atol: 1e-6));
+
+        using var allPadding = ones(1, 3, dtype: ScalarType.Bool);
+        var exception = Assert.Throws<ArgumentException>(() => attention.forward(query, keyValueA, allPadding));
+        Assert.Contains("at least one token", exception.Message);
+    }
+
+    [Fact]
+    public void DotProductScoringIgnoresPaddingTokens()
+    {
+        manual_seed(29);
+        using var scoring = new Sam3DotProductScoring(d_model: 8, d_proj: 8);
+        using var queries = randn(1, 1, 2, 8);
+        using var validToken = randn(1, 1, 8);
+        using var paddingA = zeros(2, 1, 8);
+        using var paddingB = full([2, 1, 8], -1000f);
+        using var promptA = cat([validToken, paddingA], dim: 0);
+        using var promptB = cat([validToken, paddingB], dim: 0);
+        using var paddingMask = tensor(new bool[,] { { false, true, true } });
+        using var scoresA = scoring.forward(queries, promptA, paddingMask);
+        using var scoresB = scoring.forward(queries, promptB, paddingMask);
+
+        Assert.True(allclose(scoresA, scoresB, rtol: 1e-5, atol: 1e-6));
     }
 
     [Fact]

@@ -156,7 +156,8 @@ public class Sam3PromptCrossAttn : Module
         if (keyPaddingMask is not null)
         {
             var mask = keyPaddingMask.ndim == 3 ? keyPaddingMask.squeeze(0) : keyPaddingMask;
-            attn_weights = attn_weights.masked_fill(mask.logical_not().unsqueeze(1).unsqueeze(1), float.NegativeInfinity);
+            ValidatePaddingMask(mask, B, S);
+            attn_weights = attn_weights.masked_fill(mask.unsqueeze(1).unsqueeze(1), float.NegativeInfinity);
         }
         var attn_probs = functional.softmax(attn_weights, dim: 3);
         var attn_out = attn_probs.matmul(v_h);  // [bs, nhead, nq, hd]
@@ -168,6 +169,15 @@ public class Sam3PromptCrossAttn : Module
         attn_out = o_proj.forward(attn_out);  // [nq, bs, d_model]
 
         return attn_out;
+    }
+
+    private static void ValidatePaddingMask(Tensor mask, long batchSize, long sequenceLength)
+    {
+        if (mask.shape is not [var maskBatch, var maskSequence] ||
+            maskBatch != batchSize || maskSequence != sequenceLength)
+            throw new ArgumentException("SAM 3 prompt padding mask must have shape [batch, sequence].");
+        if (mask.all(dim: 1).any().item<bool>())
+            throw new ArgumentException("SAM 3 prompt padding mask must leave at least one token unmasked per batch.");
     }
 }
 
@@ -319,9 +329,10 @@ public class Sam3DotProductScoring : Module
             prompt_mask = prompt_mask.squeeze(0);  // Remove extra batch dim if present
         }
 
-        // is_valid: [seq_len, bs, 1]; 1 for valid, 0 for padding
-        // Note: prompt_mask is 1=valid, 0=padding (opposite of typical attention mask)
-        var is_valid = prompt_mask.permute(new long[] { 1, 0 }).unsqueeze(-1).to(ScalarType.Float32);  // [seq_len, bs, 1]
+        // prompt_mask follows PyTorch key_padding_mask semantics: true means padding.
+        if (prompt_mask.all(dim: 1).any().item<bool>())
+            throw new ArgumentException("SAM 3 prompt padding mask must leave at least one token unmasked per batch.");
+        var is_valid = prompt_mask.logical_not().permute(new long[] { 1, 0 }).unsqueeze(-1).to(ScalarType.Float32);
 
         // num_valid: [bs, 1]; clamp at min 1.0 to avoid division by zero
         var num_valid = clamp(is_valid.sum(dim: 0), 1.0f);  // [bs, 1]
