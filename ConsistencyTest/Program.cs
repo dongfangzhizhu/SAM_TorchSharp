@@ -131,6 +131,7 @@ internal static class Program
 
         try
         {
+            Sam3ImageCommand.ValidateOutputs(outputs);
             foreach (var (name, tensor) in outputs)
             {
                 var outputPath = Path.Combine(outputDirectory, $"{name}.npy");
