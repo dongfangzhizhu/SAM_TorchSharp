@@ -209,7 +209,7 @@ public class Sam3CheckpointLoaderBinary
         if (ckptKey.StartsWith("geometry_encoder."))
         {
             var rest = ckptKey.Substring("geometry_encoder.".Length);
-            if (rest.StartsWith("cls_embed.") || rest.StartsWith("boxes_direct_project.") ||
+            if (rest.StartsWith("boxes_direct_project.") ||
                 rest.StartsWith("boxes_pool_project.") || rest.StartsWith("boxes_pos_enc_project.") ||
                 rest.StartsWith("output_layer_norm.") || rest.StartsWith("prompt_layer_norm.") ||
                 rest.StartsWith("vision_layer_norm.")) return null;
@@ -384,7 +384,7 @@ public class Sam3CheckpointLoaderBinary
         if (rest.StartsWith("geometry_encoder."))
         {
             var geoRest = rest.Substring("geometry_encoder.".Length);
-            if (geoRest.StartsWith("cls_embed.") || geoRest.StartsWith("boxes_direct_project.") ||
+            if (geoRest.StartsWith("boxes_direct_project.") ||
                 geoRest.StartsWith("boxes_pool_project.") || geoRest.StartsWith("boxes_pos_enc_project.") ||
                 geoRest.StartsWith("points_direct_project.") || geoRest.StartsWith("points_pool_project.") ||
                 geoRest.StartsWith("points_pos_enc_project.") || geoRest.StartsWith("encode_norm.") ||

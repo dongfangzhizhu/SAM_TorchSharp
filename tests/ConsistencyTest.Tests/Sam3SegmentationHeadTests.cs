@@ -24,6 +24,25 @@ public sealed class Sam3SegmentationHeadTests
     }
 
     [Fact]
+    public void EmptyGeometryPromptUsesPersistentClsEmbedding()
+    {
+        manual_seed(31);
+        using var encoder = new Sam3GeometryEncoderNew(d_model: 8, num_geo_layers: 0);
+        var (firstTokens, firstMask) = encoder.EncodeEmptyPrompt(2, CPU);
+        var (secondTokens, secondMask) = encoder.EncodeEmptyPrompt(2, CPU);
+        using (firstTokens)
+        using (firstMask)
+        using (secondTokens)
+        using (secondMask)
+        {
+            Assert.Equal([1L, 2L, 8L], firstTokens.shape);
+            Assert.True(equal(firstTokens, secondTokens).all().item<bool>());
+            Assert.False(firstMask.any().item<bool>());
+            Assert.True(equal(firstMask, secondMask).all().item<bool>());
+        }
+    }
+
+    [Fact]
     public void ProducesPerQueryMaskLogitsAtHighestFpnResolution()
     {
         manual_seed(17);

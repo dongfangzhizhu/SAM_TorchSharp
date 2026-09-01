@@ -34,6 +34,7 @@ public sealed class Sam3CheckpointLoaderTests
     [InlineData("detector_model.detr_decoder.layers.2.text_cross_attn.q_proj.weight", "transformer_decoder.layer_2.ca_text_q_proj.weight")]
     [InlineData("detector_model.detr_decoder.box_head.layer3.bias", "transformer_decoder.box_head.2.bias")]
     [InlineData("detector_model.detr_decoder.presence_token.weight", "transformer_decoder.presence_token")]
+    [InlineData("detector_model.geometry_encoder.cls_embed.weight", "geometry_encoder.cls_embed.weight")]
     [InlineData("detector_model.mask_decoder.mask_embedder.layers.1.weight", "mask_decoder.mask_embedder.layer_1.weight")]
     [InlineData("detector_model.dot_product_scoring.text_mlp.layer1.weight", "dot_product_scoring.text_mlp.0.weight")]
     [InlineData("detector_model.dot_product_scoring.text_mlp.layer2.bias", "dot_product_scoring.text_mlp.1.bias")]
@@ -44,7 +45,6 @@ public sealed class Sam3CheckpointLoaderTests
 
     [Theory]
     [InlineData("tracker_model.memory_encoder.weight")]
-    [InlineData("detector_model.geometry_encoder.cls_embed.weight")]
     [InlineData("detector_model.mask_decoder.semantic_projection.weight")]
     [InlineData("detector_model.unknown.weight")]
     public void ReturnsNullForUnsupportedOfficialKeys(string checkpointKey)

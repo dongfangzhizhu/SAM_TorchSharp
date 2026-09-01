@@ -114,6 +114,7 @@ public class Sam3GeometryEncoderNew : Module
 {
     private readonly List<Sam3GeometryEncoderLayer> layers;
     private readonly Embedding label_embed;
+    private readonly Embedding cls_embed;
     private readonly Linear final_proj;
     private readonly int d_model;
     private readonly int num_geo_layers;
@@ -125,6 +126,7 @@ public class Sam3GeometryEncoderNew : Module
         this.num_geo_layers = num_geo_layers;
 
         label_embed = Embedding(2, d_model);
+        cls_embed = Embedding(1, d_model);
         final_proj = Linear(d_model, d_model);
 
         layers = new List<Sam3GeometryEncoderLayer>();
@@ -150,13 +152,7 @@ public class Sam3GeometryEncoderNew : Module
         bool hasMasks = geo_prompt.masks is not null && geo_prompt.masks.numel() > 0;
 
         if (!hasPoints && !hasBoxes && !hasMasks)
-        {
-            // Return a single CLS token [1, bs, d_model]
-            var cls_weight = torch.randn(new long[] { 1, d_model }, device: device) * 0.02f;
-            var cls_token = cls_weight.expand(1, bs, d_model);
-            var cls_mask = zeros(new long[] { bs, 1 }, dtype: ScalarType.Bool, device: device);
-            return Tuple.Create(cls_token, cls_mask);
-        }
+            return EncodeEmptyPrompt(bs, device);
 
         var allFeats = new List<Tensor>();
         var allMasks = new List<Tensor>();
@@ -268,6 +264,14 @@ public class Sam3GeometryEncoderNew : Module
         var geoMask = zeros(new long[] { bs, finalSeqLen }, dtype: ScalarType.Bool, device: device);
 
         return Tuple.Create(geoCombined, geoMask);
+    }
+
+    public Tuple<Tensor, Tensor> EncodeEmptyPrompt(long batchSize, Device device)
+    {
+        if (batchSize <= 0) throw new ArgumentOutOfRangeException(nameof(batchSize));
+        var clsToken = cls_embed.weight.view(1, 1, d_model).repeat(1, batchSize, 1).to(device);
+        var clsMask = zeros(new long[] { batchSize, 1 }, dtype: ScalarType.Bool, device: device);
+        return Tuple.Create(clsToken, clsMask);
     }
 
     /// <summary>
