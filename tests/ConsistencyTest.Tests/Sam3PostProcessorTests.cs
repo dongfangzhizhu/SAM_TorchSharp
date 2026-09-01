@@ -38,6 +38,30 @@ public sealed class Sam3PostProcessorTests
         Assert.Equal([0L, 12L, 16L], result.Masks.shape);
     }
 
+    [Theory]
+    [InlineData("boxes")]
+    [InlineData("logits")]
+    [InlineData("masks")]
+    public void RejectsNonFiniteModelOutputs(string outputName)
+    {
+        using var boxes = zeros(1, 1, 4);
+        using var logits = zeros(1, 1, 1);
+        using var masks = zeros(1, 1, 2, 2);
+        using var nonFinite = full([1], float.NaN);
+        var target = outputName switch
+        {
+            "boxes" => boxes,
+            "logits" => logits,
+            _ => masks,
+        };
+        target.flatten()[0] = nonFinite[0];
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            Sam3PostProcessor.Process(boxes, logits, masks, 12, 16));
+
+        Assert.Contains("non-finite", exception.Message);
+    }
+
     private sealed class FloatComparer(float tolerance) : IEqualityComparer<float>
     {
         public bool Equals(float x, float y) => Math.Abs(x - y) <= tolerance;

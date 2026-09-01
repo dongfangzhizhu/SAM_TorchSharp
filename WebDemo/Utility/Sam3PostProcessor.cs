@@ -33,6 +33,10 @@ public static class Sam3PostProcessor
             throw new ArgumentException("SAM 3 outputs must have shapes [1,Q,4], [1,Q,1], and [1,Q,H,W].");
         if (boxes.size(1) != logits.size(1) || boxes.size(1) != maskLogits.size(1))
             throw new ArgumentException("SAM 3 output query counts must match.");
+        if (!boxes.isfinite().all().item<bool>() ||
+            !logits.isfinite().all().item<bool>() ||
+            !maskLogits.isfinite().all().item<bool>())
+            throw new InvalidOperationException("SAM 3 outputs contain non-finite values.");
         if (imageHeight <= 0 || imageWidth <= 0) throw new ArgumentOutOfRangeException(nameof(imageHeight));
         if (confidenceThreshold is < 0 or > 1) throw new ArgumentOutOfRangeException(nameof(confidenceThreshold));
         if (maxDetections <= 0) throw new ArgumentOutOfRangeException(nameof(maxDetections));
