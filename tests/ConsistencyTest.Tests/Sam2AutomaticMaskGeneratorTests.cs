@@ -25,6 +25,9 @@ public sealed class Sam2AutomaticMaskGeneratorTests
         Assert.All(records, record =>
         {
             Assert.NotNull(record.Segmentation);
+            Assert.NotNull(record.BinaryMask);
+            Assert.Equal(32, record.BinaryMask!.GetLength(0));
+            Assert.Equal(48, record.BinaryMask.GetLength(1));
             Assert.Equal([32L, 48L], record.Segmentation!.Size);
             Assert.Equal(32 * 48, record.Segmentation.Counts.Sum());
             Assert.InRange(record.Area, 0, 32 * 48);
@@ -40,6 +43,20 @@ public sealed class Sam2AutomaticMaskGeneratorTests
             .ThenBy(point => point.Y)
             .ToArray();
         Assert.Equal([(12f, 8f), (12f, 24f), (36f, 8f), (36f, 24f)], distinctPoints);
+    }
+
+    [Fact]
+    public void RleRoundTripPreservesBinaryMaskLayout()
+    {
+        using var mask = zeros(1, 3, 4, dtype: ScalarType.Bool);
+        mask[0, 1, 2] = true;
+        mask[0, 2, 0] = true;
+
+        var decoded = AMGUtiities.RleToMask(AMGUtiities.MaskToRle(mask)[0]);
+
+        Assert.True(decoded[1, 2]);
+        Assert.True(decoded[2, 0]);
+        Assert.Equal(2, decoded.Cast<bool>().Count(value => value));
     }
 
     [Fact]

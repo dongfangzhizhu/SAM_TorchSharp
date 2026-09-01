@@ -7,6 +7,12 @@ using SAMTorchSharp.Modeling.Sam2;
 
 namespace SAMTorchSharp
 {
+    public enum Sam2MaskOutputMode
+    {
+        BinaryMask,
+        UncompressedRle,
+    }
+
     /// <summary>
     /// Automatic mask generation for SAM2 images.
     /// Generates a grid of point prompts over the image, then filters
@@ -28,6 +34,7 @@ namespace SAMTorchSharp
         private readonly long _minMaskRegionArea;
         private readonly bool _useM2M;
         private readonly bool _multimaskOutput;
+        private readonly Sam2MaskOutputMode _outputMode;
         private readonly double[][] _pointGrids;
 
         public SAM2AutomaticMaskGenerator(Sam2Base model,
@@ -43,6 +50,7 @@ namespace SAMTorchSharp
             double cropOverlapRatio = 512.0 / 1500.0,
             int cropNPointsDownscaleFactor = 1,
             long minMaskRegionArea = 0,
+            Sam2MaskOutputMode outputMode = Sam2MaskOutputMode.BinaryMask,
             bool useM2M = false,
             bool multimaskOutput = true)
         {
@@ -58,6 +66,7 @@ namespace SAMTorchSharp
             _cropOverlapRatio = cropOverlapRatio;
             _cropNPointsDownscaleFactor = cropNPointsDownscaleFactor;
             _minMaskRegionArea = minMaskRegionArea;
+            _outputMode = outputMode;
             _useM2M = useM2M;
             _multimaskOutput = multimaskOutput;
 
@@ -84,6 +93,9 @@ namespace SAMTorchSharp
                 currAnns.Add(new MaskRecord
                 {
                     Segmentation = seg,
+                    BinaryMask = _outputMode == Sam2MaskOutputMode.BinaryMask
+                        ? AMGUtiities.RleToMask(seg)
+                        : null,
                     Area = AMGUtiities.AreaFromRle(seg),
                     BBox = TensorToArray(AMGUtiities.BoxXYXYToXYWH(boxes.index(new TensorIndex[] { i }))),
                     PredictedIou = iouPreds[i].item<float>(),
@@ -368,6 +380,7 @@ namespace SAMTorchSharp
     public class MaskRecord
     {
         public RleElement? Segmentation { get; set; }
+        public bool[,]? BinaryMask { get; set; }
         public int Area { get; set; }
         public float[] BBox { get; set; } = null!;
         public float PredictedIou { get; set; }

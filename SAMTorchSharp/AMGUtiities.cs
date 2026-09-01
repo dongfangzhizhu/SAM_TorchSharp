@@ -351,6 +351,29 @@ namespace SAMTorchSharp
             return area;
         }
 
+        /// <summary>Decode an uncompressed COCO RLE into a row-major binary mask.</summary>
+        public static bool[,] RleToMask(RleElement rle)
+        {
+            int height = checked((int)rle.Size[0]);
+            int width = checked((int)rle.Size[1]);
+            var mask = new bool[height, width];
+            int offset = 0;
+            bool value = false;
+            foreach (int count in rle.Counts)
+            {
+                for (int index = 0; index < count; index++, offset++)
+                {
+                    int x = offset / height;
+                    int y = offset % height;
+                    mask[y, x] = value;
+                }
+                value = !value;
+            }
+            if (offset != height * width)
+                throw new InvalidDataException("RLE counts do not match the declared mask size.");
+            return mask;
+        }
+
         /// <summary>Build a 2D grid of points evenly spaced in [0,1]x[0,1].</summary>
         public static double[] BuildPointGrid(int nPerSide)
         {
