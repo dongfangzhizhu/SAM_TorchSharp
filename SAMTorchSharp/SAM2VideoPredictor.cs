@@ -487,6 +487,12 @@ namespace SAMTorchSharp
             objIdToIdx.Clear();
             objIdxToId.Clear();
             objIds.Clear();
+
+            ((Dictionary<long, Dictionary<int, PointInputPerFrame>>)state["point_inputs_per_obj"]).Clear();
+            ((Dictionary<long, Dictionary<int, Tensor>>)state["mask_inputs_per_obj"]).Clear();
+            ((Dictionary<long, ObjectOutputDict>)state["output_dict_per_obj"]).Clear();
+            ((Dictionary<long, ObjectOutputDict>)state["temp_output_dict_per_obj"]).Clear();
+            ((Dictionary<long, Dictionary<int, FrameTrackedInfo>>)state["frames_tracked_per_obj"]).Clear();
         }
 
         // =====================================================================
@@ -628,7 +634,7 @@ namespace SAMTorchSharp
                 pointInputs: pointInputs,
                 maskInputs: maskInputs,
                 outputDict: videoOutputDict,
-                numFrames: (int)state["num_frames"],
+                numFrames: checked((int)(long)state["num_frames"]),
                 trackInReverse: reverse,
                 runMemEncoder: runMemEncoder,
                 prevSamMaskLogits: prevSamMaskLogits);
@@ -714,14 +720,14 @@ namespace SAMTorchSharp
                 var objMask = outRec.PredMasks;
                 if (objMask.shape[2] == consolidatedH && objMask.shape[3] == consolidatedW)
                 {
-                    predMasks.index(new TensorIndex[] { objIdx }).copy_(objMask);
+                    predMasks.narrow(0, objIdx, 1).copy_(objMask);
                 }
                 else
                 {
                     var resized = interpolate(objMask.to(ScalarType.Float32),
                         size: new long[] { consolidatedH, consolidatedW },
                         mode: InterpolationMode.Bilinear, align_corners: false);
-                    predMasks.index(new TensorIndex[] { objIdx }).copy_(resized);
+                    predMasks.narrow(0, objIdx, 1).copy_(resized);
                 }
             }
 
