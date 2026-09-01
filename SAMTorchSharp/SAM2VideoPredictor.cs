@@ -133,11 +133,16 @@ namespace SAMTorchSharp
             Dictionary<string, object> state,
             int frameIdx,
             long objId,
-            Tensor points,
-            Tensor labels,
+            Tensor? points = null,
+            Tensor? labels = null,
             bool clearOldPoints = true,
             Tensor? box = null)
         {
+            if ((points is null) != (labels is null))
+                throw new ArgumentException("points and labels must be provided together");
+            if (points is null && box is null)
+                throw new ArgumentException("at least one of points or box must be provided as input");
+
             var objIdx = _ObjIdToIdx(state, objId);
             var pointInputsPerFrame = (Dictionary<long, Dictionary<int, PointInputPerFrame>>)state["point_inputs_per_obj"];
             var maskInputsPerFrame = (Dictionary<long, Dictionary<int, Tensor>>)state["mask_inputs_per_obj"];
@@ -146,36 +151,34 @@ namespace SAMTorchSharp
             var videoW = (long)state["video_width"];
             var device = (Device)state["device"];
 
-            Tensor pts = points.to(device);
-            Tensor lbls = labels.to(device).to(ScalarType.Int32);
+            Tensor pts = points?.to(device) ?? empty(new long[] { 0, 2 }, dtype: ScalarType.Float32, device: device);
+            Tensor lbls = labels?.to(device).to(ScalarType.Int32) ?? empty(new long[] { 0 }, dtype: ScalarType.Int32, device: device);
 
             if (pts.dim() == 2) pts = pts.unsqueeze(0);
             if (lbls.dim() == 1) lbls = lbls.unsqueeze(0);
 
             // Scale coordinates: [orig_px] / [W, H] * image_size
-            Tensor ptsNormalized = pts.clone();
             var wTensor = tensor((float)videoW, device: device);
             var hTensor = tensor((float)videoH, device: device);
             var imgSizeTensor = tensor((float)_model.image_size, device: device);
 
-            var col0 = ptsNormalized.index(new TensorIndex[] { TensorIndex.Ellipsis, 0 });
-            var col1 = ptsNormalized.index(new TensorIndex[] { TensorIndex.Ellipsis, 1 });
+            var col0 = pts.index(new TensorIndex[] { TensorIndex.Ellipsis, 0 });
+            var col1 = pts.index(new TensorIndex[] { TensorIndex.Ellipsis, 1 });
             col0 = (col0 / wTensor) * imgSizeTensor;
             col1 = (col1 / hTensor) * imgSizeTensor;
-            var cols = stack(new[] { col0, col1 }, dim: -1);
+            var scaledPoints = stack(new[] { col0, col1 }, dim: -1);
 
             if (box is not null)
             {
                 if (!clearOldPoints)
                     throw new InvalidOperationException("cannot add box without clearing old points");
                 var b = box.to(device).reshape(1, 2, 2);
+                var boxX = (b.index(new TensorIndex[] { TensorIndex.Ellipsis, 0 }) / wTensor) * imgSizeTensor;
+                var boxY = (b.index(new TensorIndex[] { TensorIndex.Ellipsis, 1 }) / hTensor) * imgSizeTensor;
+                var scaledBox = stack(new[] { boxX, boxY }, dim: -1);
                 var bl = tensor(new long[] { 2, 3 }, dtype: ScalarType.Int32, device: device).reshape(1, 2);
-                cols = cat(new[] { b, cols }, dim: 1);
+                scaledPoints = cat(new[] { scaledBox, scaledPoints }, dim: 1);
                 lbls = cat(new[] { bl, lbls }, dim: 1);
-            }
-            else
-            {
-                ptsNormalized = cols;
             }
 
             var ptInputs = pointInputsPerFrame[objIdx];
@@ -185,13 +188,13 @@ namespace SAMTorchSharp
             var existing = ptInputs[frameIdx];
             if (existing is not null && !clearOldPoints)
             {
-                ptsNormalized = cat(new[] { existing.PointCoords, ptsNormalized }, dim: 1);
+                scaledPoints = cat(new[] { existing.PointCoords, scaledPoints }, dim: 1);
                 lbls = cat(new[] { existing.PointLabels, lbls }, dim: 1);
             }
 
             ptInputs[frameIdx] = new PointInputPerFrame
             {
-                PointCoords = ptsNormalized.contiguous(),
+                PointCoords = scaledPoints.contiguous(),
                 PointLabels = lbls.contiguous()
             };
             maskInputsPerFrame[objIdx].Remove(frameIdx);
@@ -267,15 +270,10 @@ namespace SAMTorchSharp
 
             var modelDevice = _modelDevice;
 
-            Tensor maskInput;
-            if (mask.dtype != ScalarType.Float32)
-            {
-                maskInput = mask.to(ScalarType.Float32, device: modelDevice).unsqueeze(0).unsqueeze(0);
-            }
-            else
-            {
-                maskInput = mask.unsqueeze(0).unsqueeze(0);
-            }
+            if (mask.dim() != 2)
+                throw new ArgumentException("mask must be a 2D tensor", nameof(mask));
+
+            Tensor maskInput = mask.to(ScalarType.Float32, device: modelDevice).unsqueeze(0).unsqueeze(0);
 
             long maskH = maskInput.size(2);
             long maskW = maskInput.size(3);
@@ -450,14 +448,11 @@ namespace SAMTorchSharp
 
                         objOutputDict.NonCondFrameOutputs[frameIdx] = compactOut;
 
-                        var framesTracked = (Dictionary<long, Dictionary<int, FrameTrackedInfo>>)state["frames_tracked_per_obj"];
-                        if (!framesTracked[objIdx].ContainsKey(frameIdx))
-                            framesTracked[objIdx][frameIdx] = new FrameTrackedInfo { Reverse = reverse };
-                        else
-                            framesTracked[objIdx][frameIdx].Reverse = reverse;
-
                         predMasksPerObj.Add(predMasksGpu);
                     }
+
+                    var framesTracked = (Dictionary<long, Dictionary<int, FrameTrackedInfo>>)state["frames_tracked_per_obj"];
+                    framesTracked[objIdx][frameIdx] = new FrameTrackedInfo { Reverse = reverse };
                 }
 
                 Tensor allPredMasks;

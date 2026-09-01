@@ -6,6 +6,62 @@ namespace ConsistencyTest.Tests;
 public sealed class Sam2VideoPredictorTests
 {
     [Fact]
+    public void SupportsBoxOnlyAndAdditionalCorrectionPoints()
+    {
+        using var model = BuildSam2.BuildSam2HieraTiny(imageSize: 64);
+        using var predictor = new SAM2VideoPredictor(model);
+        using var frames = rand(1, 3, 64, 64);
+        using var box = tensor(new float[] { 12, 8, 36, 24 });
+        using var correction = tensor(new float[] { 24, 16 }).reshape(1, 2);
+        using var correctionLabel = tensor(new long[] { 0 });
+        var state = predictor.InitState(frames, originalHeight: 32, originalWidth: 48);
+
+        var boxResult = predictor.AddNewPointsOrBox(state, 0, objId: 7, box: box);
+        var correctionResult = predictor.AddNewPointsOrBox(
+            state, 0, objId: 7, correction, correctionLabel, clearOldPoints: false);
+
+        var prompts = ((Dictionary<long, Dictionary<int, PointInputPerFrame>>)state["point_inputs_per_obj"])[0][0];
+        Assert.Equal([1L, 3L, 2L], prompts.PointCoords.shape);
+        Assert.Equal([2, 3, 0], prompts.PointLabels.flatten().data<int>().ToArray());
+        Assert.Equal(
+            [16f, 16f, 48f, 48f, 32f, 32f],
+            prompts.PointCoords.flatten().data<float>().ToArray());
+        boxResult.VideoResMasks.Dispose();
+        correctionResult.VideoResMasks.Dispose();
+    }
+
+    [Fact]
+    public void MaskPromptReplacesPointsAndPropagatesBackward()
+    {
+        using var model = BuildSam2.BuildSam2HieraTiny(imageSize: 64);
+        using var predictor = new SAM2VideoPredictor(model);
+        using var frames = rand(3, 3, 64, 64);
+        using var points = tensor(new float[] { 24, 16 }).reshape(1, 2);
+        using var labels = tensor(new long[] { 1 });
+        using var mask = zeros(32, 48);
+        mask[TensorIndex.Slice(8, 24), TensorIndex.Slice(12, 36)] = 1;
+        var state = predictor.InitState(frames, originalHeight: 32, originalWidth: 48);
+
+        var pointResult = predictor.AddNewPointsOrBox(state, 2, objId: 9, points, labels);
+        var maskResult = predictor.AddNewMask(state, 2, objId: 9, mask);
+        var propagated = predictor.PropagateInVideo(state, startFrameIdx: 2, reverse: true).ToList();
+
+        Assert.Empty(((Dictionary<long, Dictionary<int, PointInputPerFrame>>)state["point_inputs_per_obj"])[0]);
+        var storedMask = ((Dictionary<long, Dictionary<int, Tensor>>)state["mask_inputs_per_obj"])[0][2];
+        Assert.Equal([1L, 1L, 64L, 64L], storedMask.shape);
+        Assert.Equal([2, 1, 0], propagated.Select(result => result.FrameIdx).ToArray());
+        Assert.All(propagated, result =>
+        {
+            Assert.Equal([1L, 1L, 32L, 48L], result.VideoResMasks.shape);
+            result.VideoResMasks.Dispose();
+        });
+        var tracked = ((Dictionary<long, Dictionary<int, FrameTrackedInfo>>)state["frames_tracked_per_obj"])[0];
+        Assert.All(tracked.Values, info => Assert.True(info.Reverse));
+        pointResult.VideoResMasks.Dispose();
+        maskResult.VideoResMasks.Dispose();
+    }
+
+    [Fact]
     public void PropagatesPointPromptAcrossPreprocessedFrames()
     {
         using var model = BuildSam2.BuildSam2HieraTiny(imageSize: 64);
