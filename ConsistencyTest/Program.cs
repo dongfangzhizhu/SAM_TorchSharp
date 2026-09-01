@@ -31,6 +31,7 @@ internal static class Program
                 "compare" => RunCompare(options),
                 "sam2-checkpoint" => RunSam2Checkpoint(options),
                 "sam2-image" => RunSam2Image(options),
+                "sam2-video" => RunSam2Video(options),
                 "sam3-run" => RunSam3(options),
                 "self-test" => RunSelfTest(options),
                 _ => Fail($"Unknown command '{args[0]}'. Run with --help for usage.", UsageError),
@@ -195,6 +196,21 @@ internal static class Program
         return report.IsComplete ? 0 : ValidationError;
     }
 
+    private static int RunSam2Video(CliOptions options)
+    {
+        var checkpointPath = options.RequirePath("checkpoint");
+        var variantName = options.Get("variant") ?? throw new CliException("Missing required option '--variant'.");
+        var vectorDirectory = Path.GetFullPath(options.Get("vectors") ?? throw new CliException("Missing required option '--vectors'."));
+        if (!Directory.Exists(vectorDirectory)) throw new CliException($"Vector directory does not exist: {vectorDirectory}");
+        var reportPath = Path.GetFullPath(options.Get("output") ?? Path.Combine(vectorDirectory, "parity_cs.json"));
+        var absoluteTolerance = options.GetDouble("atol", 2e-2, min: 0);
+        var relativeTolerance = options.GetDouble("rtol", 1e-3, min: 0);
+        options.EnsureNoUnused();
+        return Sam2VideoCommand.Run(
+            Sam2ImageCommand.ParseVariant(variantName), variantName.ToLowerInvariant(), checkpointPath,
+            vectorDirectory, reportPath, absoluteTolerance, relativeTolerance);
+    }
+
     private static int RunSam2Image(CliOptions options)
     {
         var checkpointPath = options.RequirePath("checkpoint");
@@ -278,6 +294,7 @@ internal static class Program
               ConsistencyTest compare --expected <file.npy> --actual <file.npy> [--atol 1e-5] [--rtol 1e-4]
               ConsistencyTest sam2-checkpoint --variant <name> --checkpoint <model.pt|model.safetensors> [options]
               ConsistencyTest sam2-image --variant <name> --checkpoint <model.pt|model.safetensors> --image <image.npy> [prompts] [options]
+              ConsistencyTest sam2-video --variant <name> --checkpoint <model.pt|model.safetensors> --vectors <directory> [options]
               ConsistencyTest sam3-run --checkpoint <model.safetensors|model.bin> [options]
 
             sam2-checkpoint options:

@@ -84,6 +84,7 @@ namespace SAMTorchSharp.Modeling.Sam2
         public readonly long mem_dim;
         public readonly int image_size;
         public readonly int backbone_stride;
+        public readonly bool binarize_mask_from_pts_for_mem_enc;
         public readonly bool use_high_res_features_in_sam;
         public readonly bool directly_add_no_mem_embed;
         public readonly int num_feature_levels;
@@ -119,6 +120,7 @@ namespace SAMTorchSharp.Modeling.Sam2
             int backboneStride = 16,
             double sigmoidScaleForMemEnc = 1.0,
             double sigmoidBiasForMemEnc = 0.0,
+            bool binarizeMaskFromPointsForMemoryEncoder = false,
             bool useMaskInputAsOutputWithoutSam = false,
             int maxCondFramesInAttn = -1,
             bool directlyAddNoMemEmbed = false,
@@ -176,6 +178,7 @@ namespace SAMTorchSharp.Modeling.Sam2
 
             sigmoid_scale_for_mem_enc = sigmoidScaleForMemEnc;
             sigmoid_bias_for_mem_enc = sigmoidBiasForMemEnc;
+            binarize_mask_from_pts_for_mem_enc = binarizeMaskFromPointsForMemoryEncoder;
             memory_temporal_stride_for_eval = memoryTemporalStrideForEval;
             use_mask_input_as_output_without_sam = useMaskInputAsOutputWithoutSam;
             multimask_output_in_sam = multimaskOutputInSam;
@@ -680,14 +683,17 @@ namespace SAMTorchSharp.Modeling.Sam2
             IList<Tensor> currentVisionFeats,
             IList<(long H, long W)> featSizes,
             Tensor predMasksHighRes,
-            Tensor objectScoreLogits)
+            Tensor objectScoreLogits,
+            bool isMaskFromPoints = false)
         {
             long B = currentVisionFeats[^1].shape[1];
             long C = hidden_dim;
             var (H, W) = featSizes[^1];
             Tensor pixFeat = currentVisionFeats[^1].permute(1, 2, 0).view(B, C, H, W);
 
-            Tensor maskForMem = sigmoid(predMasksHighRes);
+            Tensor maskForMem = binarize_mask_from_pts_for_mem_enc && isMaskFromPoints && !training
+                ? (predMasksHighRes > 0).to(ScalarType.Float32)
+                : sigmoid(predMasksHighRes);
             if (sigmoid_scale_for_mem_enc != 1.0)
             {
                 maskForMem = maskForMem * sigmoid_scale_for_mem_enc;

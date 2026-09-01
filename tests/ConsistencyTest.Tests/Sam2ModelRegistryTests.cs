@@ -38,4 +38,16 @@ public sealed class Sam2ModelRegistryTests
     {
         Assert.Throws<ArgumentOutOfRangeException>(() => Sam2ModelRegistry.Get((Sam2ModelVariant)99));
     }
+
+    [Theory]
+    [InlineData(Sam2ModelVariant.Sam2Tiny)]
+    [InlineData(Sam2ModelVariant.Sam2Small)]
+    [InlineData(Sam2ModelVariant.Sam21Tiny)]
+    [InlineData(Sam2ModelVariant.Sam21Small)]
+    public void VideoBuilderBinarizesMasksFromInteractivePrompts(Sam2ModelVariant variant)
+    {
+        using var model = Sam2ModelBuilder.Build(variant);
+
+        Assert.True(model.binarize_mask_from_pts_for_mem_enc);
+    }
 }

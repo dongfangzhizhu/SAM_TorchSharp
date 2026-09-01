@@ -71,6 +71,24 @@ The command writes `masks.npy`, `scores.npy`, `low_res_logits.npy`, and `summary
 float32 binary arrays by default; use `--return-logits true` for full-resolution mask logits. The
 low-resolution logits are always clamped to `[-32,32]` and can be used for refinement.
 
+## Validate SAM2 video parity
+
+Generate official Python vectors, then compare every propagated frame with the .NET predictor:
+
+```powershell
+python ..\tools\vector_gen\gen_sam2_video_real.py --config sam2.1_hiera_t `
+  --checkpoint ..\..\checkpoints\sam2.1_hiera_tiny.pt `
+  --video-dir ..\..\sam2\notebooks\videos\bedroom --num-frames 2
+dotnet run --project .\ConsistencyTest.csproj -c Release -- sam2-video `
+  --variant sam2.1-tiny --checkpoint ..\..\checkpoints\sam2.1_hiera_tiny.pt `
+  --vectors ..\testdata\sam2_video_real --atol 0.02 --rtol 1e-3
+```
+
+The command strictly loads the official checkpoint and writes `parity_cs.json`. Generated vectors,
+reports, and optional copied weights remain under ignored `testdata/` and must not be committed.
+The default absolute tolerance is `0.02` to cover expected bfloat16 memory-storage quantization;
+the report still records maximum and mean errors for every frame and intermediate memory tensor.
+
 ## Run SAM3 text-conditioned inference
 
 ```powershell

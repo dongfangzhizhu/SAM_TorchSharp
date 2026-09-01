@@ -36,6 +36,7 @@ def main() -> None:
     parser.add_argument("--video-dir", required=True, help="包含 00000.jpg, 00001.jpg... 的帧图片目录")
     parser.add_argument("--num-frames", type=int, default=5)
     parser.add_argument("--out-dir", default=None)
+    parser.add_argument("--save-weights", action="store_true", help="额外导出完整 safetensors 权重副本")
     args = parser.parse_args()
 
     config = args.config
@@ -61,8 +62,9 @@ def main() -> None:
     os.makedirs(out_dir, exist_ok=True)
 
     # 保存图片推理 + 视频推理用到的完整权重（真实 checkpoint 是严格全量的，直接整份保存即可）
-    full_sd = predictor.state_dict()
-    save_file({k: v.detach().contiguous().float() for k, v in full_sd.items()}, os.path.join(out_dir, "weights.safetensors"))
+    if args.save_weights:
+        full_sd = predictor.state_dict()
+        save_file({k: v.detach().contiguous().float() for k, v in full_sd.items()}, os.path.join(out_dir, "weights.safetensors"))
 
     # 只用前 num_frames 帧构造一个"小视频"临时目录
     frame_files = sorted(f for f in os.listdir(args.video_dir) if f.endswith(".jpg"))[: args.num_frames]
@@ -113,6 +115,17 @@ def main() -> None:
     for frame_idx in sorted(all_frame_masks.keys()):
         out_dict[f"frame{frame_idx}_masks"] = torch.as_tensor(all_frame_masks[frame_idx])
     save_tensor_dict(out_dict, os.path.join(out_dir, "output_py.safetensors"))
+
+    frame0_out = inference_state["output_dict_per_obj"][0]["cond_frame_outputs"][0]
+    save_tensor_dict(
+        {
+            "frame0_maskmem_features": frame0_out["maskmem_features"].float(),
+            "frame0_maskmem_pos_enc": frame0_out["maskmem_pos_enc"][-1].float(),
+            "frame0_obj_ptr": frame0_out["obj_ptr"].float(),
+            "frame0_object_score_logits": frame0_out["object_score_logits"].float(),
+        },
+        os.path.join(out_dir, "intermediate_py.safetensors"),
+    )
 
     print(f"config={config} checkpoint={args.checkpoint}")
     print(f"video frames used: {frame_files}")

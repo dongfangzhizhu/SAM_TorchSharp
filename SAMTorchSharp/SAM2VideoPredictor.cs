@@ -883,7 +883,8 @@ namespace SAMTorchSharp
                                 mode: InterpolationMode.Bilinear, align_corners: false);
 
                             var (maskmemFeatures, maskmemPosEnc) = _EncodeNewMemory(
-                                state, frameIdx, 1, highResMasks, outRec.ObjectScoreLogits);
+                                state, frameIdx, 1, highResMasks, outRec.ObjectScoreLogits,
+                                isMaskFromPoints: true);
 
                             outRec.MaskmemFeatures = maskmemFeatures;
                             outRec.MaskmemPosEnc = maskmemPosEnc;
@@ -912,13 +913,14 @@ namespace SAMTorchSharp
 
         private (Tensor MaskmemFeatures, IList<Tensor> MaskmemPosEnc) _EncodeNewMemory(
             Dictionary<string, object> state, int frameIdx, long batchSize,
-            Tensor highResMasks, Tensor objectScoreLogits)
+            Tensor highResMasks, Tensor objectScoreLogits, bool isMaskFromPoints)
         {
             var cachedFeatures = (Dictionary<int, CachedFeature>)state["cached_features"];
             var cached = cachedFeatures[frameIdx];
             var (visionFeats, visionPos, featSizes) = cached.Expanded;
 
-            return _model.EncodeNewMemory(visionFeats, featSizes, highResMasks, objectScoreLogits);
+            return _model.EncodeNewMemory(
+                visionFeats, featSizes, highResMasks, objectScoreLogits, isMaskFromPoints);
         }
 
         private void _ClearNonCondMemAroundInput(Dictionary<string, object> state, int frameIdx, int objIdx)

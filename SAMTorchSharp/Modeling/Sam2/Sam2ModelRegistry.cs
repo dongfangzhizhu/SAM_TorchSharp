@@ -125,6 +125,7 @@ public static class Sam2ModelBuilder
             backboneStride: 16,
             sigmoidScaleForMemEnc: 20,
             sigmoidBiasForMemEnc: -10,
+            binarizeMaskFromPointsForMemoryEncoder: true,
             useMaskInputAsOutputWithoutSam: true,
             directlyAddNoMemEmbed: true,
             useHighResFeaturesInSam: true,
