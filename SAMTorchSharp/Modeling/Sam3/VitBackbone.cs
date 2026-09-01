@@ -27,7 +27,6 @@ public class Sam3ViTBlock : Module
     private readonly long dim;
     private readonly long num_heads;
     private readonly long head_dim;
-    private readonly float scale;
 
     public Sam3ViTBlock(long dim, int num_heads = 16, double drop_path = 0.0)
         : base(nameof(Sam3ViTBlock))
@@ -35,7 +34,6 @@ public class Sam3ViTBlock : Module
         this.dim = dim;
         this.num_heads = num_heads;
         this.head_dim = dim / num_heads;
-        this.scale = 1.0f / (float)Math.Sqrt((double)head_dim);
 
         norm1 = LayerNorm(new long[] { dim }, elementwise_affine: true);
         norm2 = LayerNorm(new long[] { dim }, elementwise_affine: true);
@@ -73,8 +71,9 @@ public class Sam3ViTBlock : Module
         var k = k_proj.forward(x).reshape(new long[] { B, N, num_heads, head_dim }).transpose(1, 2);
         var v = v_proj.forward(x).reshape(new long[] { B, N, num_heads, head_dim }).transpose(1, 2);
 
-        var q_scaled = q * scale;
-        var attn = functional.scaled_dot_product_attention(q_scaled, k, v);
+        // SDPA applies the standard 1/sqrt(head_dim) scale internally, matching
+        // the official SAM 3 ViT implementation. Pre-scaling q would apply it twice.
+        var attn = functional.scaled_dot_product_attention(q, k, v);
 
         var attn_out = attn.transpose(1, 2).reshape(new long[] { B, N, C });
         return o_proj.forward(attn_out);

@@ -6,6 +6,15 @@ namespace ConsistencyTest.Tests;
 public sealed class Sam3SegmentationHeadTests
 {
     [Fact]
+    public void VisionAttentionDelegatesScalingToSdpa()
+    {
+        var source = File.ReadAllText(FindRepositoryFile("SAMTorchSharp", "Modeling", "Sam3", "VitBackbone.cs"));
+
+        Assert.Contains("scaled_dot_product_attention(q, k, v)", source);
+        Assert.DoesNotContain("scaled_dot_product_attention(q_scaled", source);
+    }
+
+    [Fact]
     public void ProducesPerQueryMaskLogitsAtHighestFpnResolution()
     {
         manual_seed(17);
@@ -51,5 +60,17 @@ public sealed class Sam3SegmentationHeadTests
             null));
 
         Assert.Contains("four FPN feature levels", exception.Message);
+    }
+
+    private static string FindRepositoryFile(params string[] parts)
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            var candidate = Path.Combine([directory.FullName, .. parts]);
+            if (File.Exists(candidate)) return candidate;
+            directory = directory.Parent;
+        }
+        throw new FileNotFoundException($"Could not locate repository file '{Path.Combine(parts)}'.");
     }
 }
