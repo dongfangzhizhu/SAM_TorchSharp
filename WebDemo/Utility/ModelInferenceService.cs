@@ -204,7 +204,11 @@ public sealed class ModelInferenceService : IDisposable
         }
         else
         {
-            new Sam3CheckpointLoaderBinary().LoadModel(model, configuredModel.CheckpointPath, CPU);
+            var report = new Sam3CheckpointLoaderBinary().LoadModelWithReport(model, configuredModel.CheckpointPath, CPU);
+            if (!report.IsComplete)
+                throw new InvalidDataException(
+                    $"Incomplete {configuredModel.DisplayName} checkpoint load: " +
+                    $"missing={report.MissingKeys.Count}, shape_mismatch={report.ShapeMismatches.Count}.");
         }
         model.eval();
         return model;

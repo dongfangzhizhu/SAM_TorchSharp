@@ -1,5 +1,6 @@
 using SAMTorchSharp.Modeling.Sam2;
 using SAMTorchSharp.Modeling.Sam3;
+using System.Text.Json;
 using WebDemo.Models;
 using WebDemo.Utility;
 
@@ -59,6 +60,32 @@ public sealed class WebDemoModelOptionsTests : IDisposable
         Assert.EndsWith("sam2.1_hiera_tiny.safetensors", models[2].CheckpointPath);
         Assert.EndsWith("sam3.bin", models[3].CheckpointPath);
         Assert.EndsWith("sam3.1_multiplex.pt", models[4].CheckpointPath);
+    }
+
+    [Fact]
+    public void DefaultSam31ConfigurationResolvesConvertedBinaryFromParentDirectory()
+    {
+        var settingsPath = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "..", "..", "..", "..", "..", "WebDemo", "appsettings.json"));
+        using var document = JsonDocument.Parse(File.ReadAllText(settingsPath));
+        var sam31 = document.RootElement.GetProperty("Models").GetProperty("Sam31");
+        var directory = sam31.GetProperty("Directory").GetString();
+        var name = sam31.GetProperty("Name").GetString();
+        var contentRoot = Path.Combine(_root, "application", "WebDemo");
+
+        var resolved = new ModelPathResolver(new ModelOptions
+        {
+            Sam31 = new() { Directory = directory!, Name = name! },
+        }, contentRoot).Sam31;
+
+        Assert.Equal("../../checkpoints/sam3.1", directory);
+        Assert.Equal("sam3.1_multiplex.bin", name);
+        Assert.Equal(Path.GetFullPath(Path.Combine(
+            contentRoot, "..", "..", "checkpoints", "sam3.1", "sam3.1_multiplex.bin")),
+            resolved.CheckpointPath);
+        Assert.Equal(Sam3CheckpointFormat.ConvertedBinary,
+            ModelInferenceService.ResolveSam3CheckpointFormat(resolved.CheckpointPath));
     }
 
     [Theory]

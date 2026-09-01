@@ -110,7 +110,7 @@ Set `Directory` and `Name` independently under `Models:Sam`, `Models:Sam2`, `Mod
 ## Known limitations
 
 - The repository currently pins a Windows x64 CPU libtorch runtime.
-- SAM 3 and SAM 3.1 use the same current experimental segmentation architecture but separate model instances and checkpoints. SAM 3.1 checkpoint key mapping is incomplete, so output quality is not yet guaranteed to match the official implementation.
+- SAM 3 and SAM 3.1 use the same current experimental image-segmentation architecture but separate model instances and checkpoints. SAM 3.1 multiplex tracker tensors are intentionally skipped because video tracking is not implemented.
 - Checkpoint files and generated test vectors are not committed because of their size and licensing.
 - PyTorch `.pt` interoperability depends on the relevant loader. The SAM 3 CLI accepts `.safetensors` or an explicitly converted `.bin`; it does not invoke Python implicitly.
 

@@ -110,7 +110,7 @@ dotnet run --project .\WebDemo\WebDemo.csproj -c Release -- `
 ## 已知限制
 
 - 仓库当前固定使用 Windows x64 CPU libtorch runtime。
-- SAM 3 和 SAM 3.1 共用当前实验性分割架构，但使用各自的模型实例和 checkpoint。SAM 3.1 checkpoint 键映射尚不完整，因此暂不保证输出质量与官方实现一致。
+- SAM 3 和 SAM 3.1 使用相同的当前实验性图像分割架构，但拥有独立模型实例和 checkpoint。由于尚未实现视频跟踪，SAM 3.1 multiplex tracker tensors 会被明确跳过。
 - checkpoint 和生成型测试向量因体积及许可证原因不提交到仓库。
 - PyTorch `.pt` 互操作取决于对应 loader。SAM 3 CLI 接受 `.safetensors` 或显式转换的 `.bin`，不会隐式调用 Python。
 
