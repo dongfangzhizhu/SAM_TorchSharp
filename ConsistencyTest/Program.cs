@@ -112,10 +112,11 @@ internal static class Program
         }
         else
         {
-            var result = new Sam3CheckpointLoaderBinary().LoadModel(model, checkpointPath, CPU);
-            (loaded, skipped, missing) = (result.Item1, result.Item2, result.Item3);
-            var total = loaded + skipped + missing;
-            coverage = total == 0 ? 0 : loaded * 100.0 / total;
+            var report = new Sam3CheckpointLoaderBinary().LoadModelWithReport(model, checkpointPath, CPU);
+            WriteSam3CheckpointReport(outputDirectory, report);
+            (loaded, skipped, missing) = (report.LoadedKeys.Count, report.SkippedKeys.Count,
+                report.MissingKeys.Count + report.ShapeMismatches.Count);
+            coverage = report.Coverage;
         }
 
         Console.WriteLine($"Checkpoint: loaded={loaded}, skipped={skipped}, missing={missing}, coverage={coverage:F2}%");
@@ -175,13 +176,17 @@ internal static class Program
         var minCoverage = options.GetDouble("min-coverage", 100, min: 0, max: 100);
         options.EnsureNoUnused();
 
-        if (Sam3CheckpointLoaderNew.DetectFormat(checkpointPath) != Sam3CheckpointFormat.OfficialSafetensors)
-            throw new CliException("sam3-checkpoint requires an official .safetensors checkpoint.");
-
         Console.WriteLine("Building SAM3 detector model...");
         using var model = new BuildSam3New().Build();
         Console.WriteLine($"Loading checkpoint: {checkpointPath}");
-        var report = new Sam3CheckpointLoaderNew().LoadModelWithReport(model, checkpointPath, CPU);
+        var report = Sam3CheckpointLoaderNew.DetectFormat(checkpointPath) switch
+        {
+            Sam3CheckpointFormat.OfficialSafetensors =>
+                new Sam3CheckpointLoaderNew().LoadModelWithReport(model, checkpointPath, CPU),
+            Sam3CheckpointFormat.ConvertedBinary =>
+                new Sam3CheckpointLoaderBinary().LoadModelWithReport(model, checkpointPath, CPU),
+            _ => throw new UnreachableException(),
+        };
         WriteSam3CheckpointReport(outputDirectory, report);
         Console.WriteLine($"Checkpoint: loaded={report.LoadedKeys.Count}, skipped={report.SkippedKeys.Count}, " +
                           $"missing={report.MissingKeys.Count}, shape_mismatch={report.ShapeMismatches.Count}, " +
