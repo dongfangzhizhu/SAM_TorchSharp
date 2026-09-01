@@ -31,7 +31,6 @@ public class Sam3GeometryEncoderLayer : Module
     private readonly long d_model;
     private readonly int num_heads;
     private readonly long head_dim;
-    private readonly float scale;
 
     public Sam3GeometryEncoderLayer(long d_model = 256, int num_heads = 8)
         : base(nameof(Sam3GeometryEncoderLayer))
@@ -39,7 +38,6 @@ public class Sam3GeometryEncoderLayer : Module
         this.d_model = d_model;
         this.num_heads = num_heads;
         this.head_dim = d_model / num_heads;
-        this.scale = 1.0f / (float)Math.Sqrt(head_dim);
 
         layer_norm1 = LayerNorm(d_model);
         layer_norm2 = LayerNorm(d_model);
@@ -70,8 +68,7 @@ public class Sam3GeometryEncoderLayer : Module
         var k = self_attn_k_proj.forward(x).reshape(new long[] { B, N, num_heads, head_dim }).transpose(1, 2);
         var v = self_attn_v_proj.forward(x).reshape(new long[] { B, N, num_heads, head_dim }).transpose(1, 2);
 
-        var q_scaled = q * scale;
-        var attn = functional.scaled_dot_product_attention(q_scaled, k, v);
+        var attn = functional.scaled_dot_product_attention(q, k, v);
 
         var attn_out = attn.transpose(1, 2).reshape(new long[] { B, N, d_model });
         return self_attn_o_proj.forward(attn_out);
@@ -87,8 +84,7 @@ public class Sam3GeometryEncoderLayer : Module
         var k = cross_attn_k_proj.forward(memory).reshape(new long[] { M, N, num_heads, head_dim }).transpose(0, 1);
         var v = cross_attn_v_proj.forward(memory).reshape(new long[] { M, N, num_heads, head_dim }).transpose(0, 1);
 
-        var q_scaled = q * scale;
-        var attn = functional.scaled_dot_product_attention(q_scaled, k, v);
+        var attn = functional.scaled_dot_product_attention(q, k, v);
 
         var attn_out = attn.transpose(1, 2).reshape(new long[] { B, N, d_model });
         return cross_attn_o_proj.forward(attn_out);

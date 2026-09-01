@@ -15,6 +15,15 @@ public sealed class Sam3SegmentationHeadTests
     }
 
     [Fact]
+    public void GeometryAttentionDelegatesScalingToSdpa()
+    {
+        var source = File.ReadAllText(FindRepositoryFile("SAMTorchSharp", "Modeling", "Sam3", "GeometryEncoderNew.cs"));
+
+        Assert.Equal(2, source.Split("scaled_dot_product_attention(q, k, v)").Length - 1);
+        Assert.DoesNotContain("scaled_dot_product_attention(q_scaled", source);
+    }
+
+    [Fact]
     public void ProducesPerQueryMaskLogitsAtHighestFpnResolution()
     {
         manual_seed(17);
