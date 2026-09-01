@@ -9,13 +9,13 @@ public sealed class Sam3CheckpointLoaderTests
     [InlineData("model.safetensors", Sam3CheckpointFormat.OfficialSafetensors)]
     [InlineData("MODEL.SAFETENSORS", Sam3CheckpointFormat.OfficialSafetensors)]
     [InlineData("model.bin", Sam3CheckpointFormat.ConvertedBinary)]
+    [InlineData("model.pt", Sam3CheckpointFormat.ConvertedBinary)]
     public void DetectsSupportedCheckpointFormats(string path, Sam3CheckpointFormat expected)
     {
         Assert.Equal(expected, Sam3CheckpointLoaderNew.DetectFormat(path));
     }
 
     [Theory]
-    [InlineData("model.pt")]
     [InlineData("model.ckpt")]
     [InlineData("model")]
     public void RejectsUnknownCheckpointFormats(string path)
@@ -108,18 +108,12 @@ public sealed class Sam3CheckpointLoaderTests
     }
 
     [Fact]
-    public void CheckpointCommandRejectsConvertedBinaryBeforeBuildingModel()
+    public void ConvertedBinaryLoaderRejectsMissingSiblingForPtPath()
     {
-        var checkpointPath = Path.Combine(Path.GetTempPath(), $"sam3-{Guid.NewGuid():N}.bin");
-        File.WriteAllBytes(checkpointPath, []);
-
-        try
-        {
-            Assert.Equal(2, Program.Main(["sam3-checkpoint", "--checkpoint", checkpointPath]));
-        }
-        finally
-        {
-            File.Delete(checkpointPath);
-        }
+        var checkpointPath = Path.Combine(Path.GetTempPath(), $"sam3-{Guid.NewGuid():N}.pt");
+        using var model = new BuildSam3New().WithTextEncoder(false).Build();
+        var exception = Assert.Throws<FileNotFoundException>(() =>
+            new Sam3CheckpointLoaderBinary().LoadModelWithReport(model, checkpointPath));
+        Assert.Equal(Path.ChangeExtension(checkpointPath, ".bin"), exception.FileName);
     }
 }

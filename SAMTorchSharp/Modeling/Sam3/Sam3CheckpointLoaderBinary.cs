@@ -16,131 +16,136 @@ public class Sam3CheckpointLoaderBinary
     public Tuple<int, int, int, CheckpointFormat> LoadModel(
         Sam3BaseNew model, string checkpointPath, Device device = null)
     {
-        device = device ?? CPU;
-        var dev = device;
-        var format = checkpointPath.EndsWith(".safetensors", StringComparison.OrdinalIgnoreCase)
-            ? CheckpointFormat.Safetensors : CheckpointFormat.PtHuggingFace;
-
-        Dictionary<string, Tensor> checkpoint;
-        if (format == CheckpointFormat.Safetensors)
-        {
-            Console.WriteLine($"[CheckpointLoader] Loading safetensors: {checkpointPath}");
-            checkpoint = TorchSharp.PyBridge.Safetensors.LoadStateDict(checkpointPath);
-        }
-        else
-        {
-            var binPath = checkpointPath.Replace(".pt", ".bin");
-            if (!File.Exists(binPath))
-            {
-                Console.WriteLine($"[CheckpointLoader] ERROR: Binary file not found: {binPath}");
-                return Tuple.Create(0, 0, 0, CheckpointFormat.PtHuggingFace);
-            }
-            checkpoint = ReadBinaryCheckpoint(binPath);
-            Console.WriteLine($"[CheckpointLoader] Loaded {checkpoint.Count} tensors from binary");
-        }
-
-        int loaded = 0, skipped = 0, missing = 0;
-
-        foreach (var kvp in checkpoint)
-        {
-            var ckptKey = kvp.Key;
-            var tensor = kvp.Value.to(dev);
-
-            if (ckptKey.Contains("fpn_layers") && ckptKey.Contains("scale_layers") && ckptKey.EndsWith(".weight"))
-                tensor = tensor.transpose(0, 1);
-
-            var modelKey = MapCheckpointKeyToModelKey(ckptKey, format);
-            if (modelKey == null) { skipped++; continue; }
-
-            // Handle fused qkv -> separate projections
-            if (modelKey.EndsWith(".self_attn_qkv.weight") || modelKey.EndsWith(".self_attn_qkv.bias"))
-            {
-                var baseKey = modelKey.Substring(0, modelKey.LastIndexOf('.'));
-                var suffix = modelKey.Substring(modelKey.LastIndexOf('.') + 1);
-                var d = (int)tensor.size(-1) / 3;
-                using (var q = tensor.narrow(-1, 0, (long)d))
-                using (var k = tensor.narrow(-1, (long)d, (long)d))
-                using (var v = tensor.narrow(-1, (long)d * 2, (long)d))
-                using (var _ng = torch.no_grad())
-                {
-                    TrySetValueByPath(model, $"{baseKey}.q_proj.{suffix}", q.contiguous());
-                    TrySetValueByPath(model, $"{baseKey}.k_proj.{suffix}", k.contiguous());
-                    TrySetValueByPath(model, $"{baseKey}.v_proj.{suffix}", v.contiguous());
-                }
-                loaded += 3;
-                continue;
-            }
-
-            if (modelKey.EndsWith(".self_attn_in_proj.weight") || modelKey.EndsWith(".self_attn_in_proj.bias"))
-            {
-                var baseKey = modelKey.Substring(0, modelKey.LastIndexOf('.'));
-                var suffix = modelKey.Substring(modelKey.LastIndexOf('.') + 1);
-                var d = (int)tensor.size(-1) / 3;
-                using (var q = tensor.narrow(-1, 0, (long)d))
-                using (var k = tensor.narrow(-1, (long)d, (long)d))
-                using (var v = tensor.narrow(-1, (long)d * 2, (long)d))
-                using (var _ng = torch.no_grad())
-                {
-                    TrySetValueByPath(model, $"{baseKey}.q_proj.{suffix}", q.contiguous());
-                    TrySetValueByPath(model, $"{baseKey}.k_proj.{suffix}", k.contiguous());
-                    TrySetValueByPath(model, $"{baseKey}.v_proj.{suffix}", v.contiguous());
-                }
-                loaded += 3;
-                continue;
-            }
-
-            if (modelKey.Contains(".self_attn.") && modelKey.Contains("in_proj"))
-            {
-                var baseKey = modelKey.Substring(0, modelKey.LastIndexOf('.'));
-                var suffix = modelKey.Substring(modelKey.LastIndexOf('.') + 1);
-                var d = (int)tensor.size(-1) / 3;
-                using (var q = tensor.narrow(-1, 0, (long)d))
-                using (var k = tensor.narrow(-1, (long)d, (long)d))
-                using (var v = tensor.narrow(-1, (long)d * 2, (long)d))
-                using (var _ng = torch.no_grad())
-                {
-                    TrySetValueByPath(model, $"{baseKey}.q_proj.{suffix}", q.contiguous());
-                    TrySetValueByPath(model, $"{baseKey}.k_proj.{suffix}", k.contiguous());
-                    TrySetValueByPath(model, $"{baseKey}.v_proj.{suffix}", v.contiguous());
-                }
-                loaded += 3;
-                continue;
-            }
-
-            if (TrySetValueByPath(model, modelKey, tensor))
-                loaded++;
-            else
-                missing++;
-        }
-
-        Console.WriteLine($"[CheckpointLoader] Loaded: {loaded}, Skipped: {skipped}, Missing: {missing}");
-        Console.WriteLine($"[CheckpointLoader] Total checkpoint tensors: {checkpoint.Count}");
-        return Tuple.Create(loaded, skipped, missing, format);
+        var report = LoadModelWithReport(model, checkpointPath, device);
+        return Tuple.Create(report.LoadedKeys.Count, report.SkippedKeys.Count,
+            report.MissingKeys.Count + report.ShapeMismatches.Count, CheckpointFormat.PtHuggingFace);
     }
 
-    private Dictionary<string, Tensor> ReadBinaryCheckpoint(string path)
+    public Sam3CheckpointLoadReport LoadModelWithReport(
+        Sam3BaseNew model, string checkpointPath, Device device = null)
     {
-        var result = new Dictionary<string, Tensor>();
-        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read);
+        ArgumentNullException.ThrowIfNull(model);
+        ArgumentException.ThrowIfNullOrWhiteSpace(checkpointPath);
+        device ??= CPU;
+
+        var extension = Path.GetExtension(checkpointPath);
+        var binaryPath = extension.Equals(".pt", StringComparison.OrdinalIgnoreCase)
+            ? Path.ChangeExtension(checkpointPath, ".bin")
+            : checkpointPath;
+        binaryPath = Path.GetFullPath(binaryPath);
+        if (!Path.GetExtension(binaryPath).Equals(".bin", StringComparison.OrdinalIgnoreCase))
+            throw new NotSupportedException("The converted SAM3 loader accepts .bin files, or .pt paths with a sibling .bin file.");
+        if (!File.Exists(binaryPath))
+            throw new FileNotFoundException("Converted SAM3 checkpoint was not found.", binaryPath);
+
+        var loaded = new List<string>();
+        var skipped = new List<string>();
+        var missing = new List<string>();
+        var shapeMismatches = new List<string>();
+        using var fs = new FileStream(binaryPath, FileMode.Open, FileAccess.Read, FileShare.Read);
         using var br = new BinaryReader(fs);
-        var count = br.ReadUInt32();
-        for (int i = 0; i < count; i++)
+        var tensorCount = checked((int)br.ReadUInt32());
+        for (var i = 0; i < tensorCount; i++)
         {
-            var keyLen = br.ReadUInt32();
-            var keyBytes = br.ReadBytes((int)keyLen);
-            var key = System.Text.Encoding.UTF8.GetString(keyBytes);
-            var shapeLen = br.ReadUInt32();
+            var keyLength = checked((int)br.ReadUInt32());
+            var key = System.Text.Encoding.UTF8.GetString(br.ReadBytes(keyLength));
+            var shapeLen = checked((int)br.ReadUInt32());
             var shape = new long[shapeLen];
-            for (int j = 0; j < shapeLen; j++) shape[j] = br.ReadInt64();
-            var dtypeByte = br.ReadByte();
-            long totalElements = 1;
-            foreach (var s in shape) totalElements *= s;
-            var dataBytes = br.ReadBytes((int)(totalElements * 4));
+            long elementCount = 1;
+            for (var j = 0; j < shapeLen; j++)
+            {
+                shape[j] = br.ReadInt64();
+                elementCount = checked(elementCount * shape[j]);
+            }
+            _ = br.ReadByte(); // The converter serializes every payload as float32.
+            var byteCount = checked((int)(elementCount * sizeof(float)));
+            var dataBytes = br.ReadBytes(byteCount);
+            if (dataBytes.Length != byteCount)
+                throw new InvalidDataException($"Truncated tensor payload for '{key}'.");
             var floatArr = new float[dataBytes.Length / 4];
             System.Buffer.BlockCopy(dataBytes, 0, floatArr, 0, dataBytes.Length);
-            result[key] = torch.tensor(floatArr, shape, dtype: ScalarType.Float32);
+            using var cpuTensor = torch.tensor(floatArr, shape, dtype: ScalarType.Float32);
+            using var tensor = cpuTensor.to(device);
+
+            var modelKey = MapPtHfKey(key);
+            if (modelKey is null)
+            {
+                skipped.Add(key);
+                continue;
+            }
+
+            Tensor assignmentTensor = tensor;
+            Tensor? transformedTensor = null;
+            if (key == "detector.backbone.vision_backbone.trunk.pos_embed" && tensor.shape.SequenceEqual(new long[] { 1, 577, 1024 }))
+            {
+                transformedTensor = tensor.narrow(1, 1, 576);
+                assignmentTensor = transformedTensor;
+            }
+            else if (key == "detector.transformer.decoder.presence_token.weight" && tensor.shape.Length == 2)
+            {
+                transformedTensor = tensor.unsqueeze(1);
+                assignmentTensor = transformedTensor;
+            }
+
+            if (IsFusedQkv(modelKey))
+            {
+                if (TryAssignFusedQkv(model, modelKey, assignmentTensor))
+                    loaded.Add(key);
+                else
+                    shapeMismatches.Add($"{key} -> {modelKey}: checkpoint=[{string.Join(",", shape)}]");
+            }
+            else if (TrySetValueByPath(model, modelKey, assignmentTensor))
+                loaded.Add(key);
+            else
+                missing.Add($"{key} -> {modelKey}");
+            transformedTensor?.Dispose();
         }
-        return result;
+
+        if (fs.Position != fs.Length)
+            throw new InvalidDataException($"Converted checkpoint has {fs.Length - fs.Position} unread trailing bytes.");
+
+        loaded.Sort(StringComparer.Ordinal);
+        skipped.Sort(StringComparer.Ordinal);
+        missing.Sort(StringComparer.Ordinal);
+        shapeMismatches.Sort(StringComparer.Ordinal);
+        var report = new Sam3CheckpointLoadReport(binaryPath, Sam3CheckpointFormat.ConvertedBinary,
+            tensorCount, loaded, missing, skipped, shapeMismatches);
+        Console.WriteLine($"[CheckpointLoader] Loaded: {loaded.Count}, Skipped: {skipped.Count}, Missing: {missing.Count}, Shape mismatch: {shapeMismatches.Count}");
+        Console.WriteLine($"[CheckpointLoader] Total checkpoint tensors: {tensorCount}");
+        return report;
+    }
+
+    private static bool IsFusedQkv(string modelKey) =>
+        modelKey.EndsWith(".qkv.weight", StringComparison.Ordinal) ||
+        modelKey.EndsWith(".qkv.bias", StringComparison.Ordinal) ||
+        modelKey.EndsWith(".self_attn_qkv.weight", StringComparison.Ordinal) ||
+        modelKey.EndsWith(".self_attn_qkv.bias", StringComparison.Ordinal) ||
+        modelKey.EndsWith("_in_proj.weight", StringComparison.Ordinal) ||
+        modelKey.EndsWith("_in_proj.bias", StringComparison.Ordinal) ||
+        modelKey.EndsWith(".in_proj.weight", StringComparison.Ordinal) ||
+        modelKey.EndsWith(".in_proj.bias", StringComparison.Ordinal);
+
+    private bool TryAssignFusedQkv(Sam3BaseNew model, string modelKey, Tensor tensor)
+    {
+        if (tensor.shape.Length == 0 || tensor.size(0) % 3 != 0)
+            return false;
+        var separator = modelKey.LastIndexOf('.');
+        var baseKey = modelKey.Substring(0, separator);
+        var suffix = modelKey.Substring(separator + 1);
+        var projectionSize = tensor.size(0) / 3;
+        using var q = tensor.narrow(0, 0, projectionSize);
+        using var k = tensor.narrow(0, projectionSize, projectionSize);
+        using var v = tensor.narrow(0, projectionSize * 2, projectionSize);
+        var projectionPrefix = baseKey.EndsWith("qkv", StringComparison.Ordinal)
+            ? baseKey.Substring(0, baseKey.Length - 3)
+            : baseKey.EndsWith("in_proj", StringComparison.Ordinal)
+                ? baseKey.Substring(0, baseKey.Length - "in_proj".Length)
+                : null;
+        if (projectionPrefix is null)
+            return false;
+        return TrySetValueByPath(model, $"{projectionPrefix}q_proj.{suffix}", q) &&
+               TrySetValueByPath(model, $"{projectionPrefix}k_proj.{suffix}", k) &&
+               TrySetValueByPath(model, $"{projectionPrefix}v_proj.{suffix}", v);
     }
 
     private string MapCheckpointKeyToModelKey(string ckptKey, CheckpointFormat format)
@@ -227,6 +232,11 @@ public class Sam3CheckpointLoaderBinary
             var parts = convRest.Split('.');
             var level = parts[0];
             var param = string.Join(".", parts.Skip(1));
+            param = param.Replace("dconv_2x2_0.", "deconv1.")
+                .Replace("dconv_2x2_1.", "deconv2.")
+                .Replace("dconv_2x2.", "deconv1.")
+                .Replace("conv_1x1.", "proj1.")
+                .Replace("conv_3x3.", "proj2.");
             return $"fpn_neck.fpn_layer_{level}.{param}";
         }
 
@@ -243,10 +253,10 @@ public class Sam3CheckpointLoaderBinary
             if (suffix.StartsWith("attn."))
             {
                 var attnSuffix = suffix.Substring("attn.".Length);
-                if (attnSuffix == "qkv.weight") return $"vision_backbone.block_{blockIdx}.self_attn_qkv.weight";
-                if (attnSuffix == "qkv.bias") return $"vision_backbone.block_{blockIdx}.self_attn_qkv.bias";
-                if (attnSuffix == "proj.weight") return $"vision_backbone.block_{blockIdx}.self_attn_o_proj.weight";
-                if (attnSuffix == "proj.bias") return $"vision_backbone.block_{blockIdx}.self_attn_o_proj.bias";
+                if (attnSuffix == "qkv.weight") return $"vision_backbone.block_{blockIdx}.qkv.weight";
+                if (attnSuffix == "qkv.bias") return $"vision_backbone.block_{blockIdx}.qkv.bias";
+                if (attnSuffix == "proj.weight") return $"vision_backbone.block_{blockIdx}.o_proj.weight";
+                if (attnSuffix == "proj.bias") return $"vision_backbone.block_{blockIdx}.o_proj.bias";
             }
             if (suffix.StartsWith("mlp.fc1.weight")) return $"vision_backbone.block_{blockIdx}.fc1.weight";
             if (suffix.StartsWith("mlp.fc1.bias")) return $"vision_backbone.block_{blockIdx}.fc1.bias";
@@ -263,8 +273,12 @@ public class Sam3CheckpointLoaderBinary
         if (rest.StartsWith("backbone.language_backbone.encoder."))
         {
             var langRest = rest.Substring("backbone.language_backbone.encoder.".Length);
+            if (langRest == "text_projection") return null; // CLIP pooled-output projection; image text tokens use resizer.
             return MapHfTextKey(langRest);
         }
+
+        if (rest == "backbone.language_backbone.resizer.weight") return "text_encoder.text_projection.weight";
+        if (rest == "backbone.language_backbone.resizer.bias") return "text_encoder.text_projection.bias";
 
         if (rest.StartsWith("backbone.language_backbone.text_projection"))
         {
@@ -276,6 +290,16 @@ public class Sam3CheckpointLoaderBinary
         if (rest.StartsWith("transformer.encoder."))
         {
             var encRest = rest.Substring("transformer.encoder.".Length);
+            encRest = encRest.Replace("layers.", "")
+                .Replace("cross_attn_image", "cross_attn")
+                .Replace(".in_proj_weight", ".in_proj.weight")
+                .Replace(".in_proj_bias", ".in_proj.bias")
+                .Replace(".out_proj.", ".o_proj.")
+                .Replace(".linear1.", ".mlp.fc1.")
+                .Replace(".linear2.", ".mlp.fc2.")
+                .Replace(".norm1.", ".layer_norm1.")
+                .Replace(".norm2.", ".layer_norm2.")
+                .Replace(".norm3.", ".layer_norm3.");
             return MapTransformerEncoderLayerKey($"detr_encoder.layers.{encRest}");
         }
 
@@ -289,6 +313,19 @@ public class Sam3CheckpointLoaderBinary
                 var parts = layerRest2.Split('.');
                 var idx = parts[0];
                 var suffix = string.Join(".", parts.Skip(1));
+                suffix = suffix.Replace("cross_attn", "vision_cross_attn")
+                    .Replace("ca_text", "text_cross_attn")
+                    .Replace(".in_proj_weight", ".in_proj.weight")
+                    .Replace(".in_proj_bias", ".in_proj.bias")
+                    .Replace(".out_proj.", ".o_proj.")
+                    .Replace(".linear1.", ".mlp.fc1.")
+                    .Replace(".linear2.", ".mlp.fc2.")
+                    .Replace("norm1.", "vision_cross_attn_layer_norm.")
+                    .Replace("norm2.", "self_attn_layer_norm.")
+                    .Replace("norm3.", "mlp_layer_norm.")
+                    .Replace("catext_norm.", "text_cross_attn_layer_norm.");
+                if (suffix.StartsWith("linear1.")) suffix = "mlp.fc1." + suffix.Substring("linear1.".Length);
+                if (suffix.StartsWith("linear2.")) suffix = "mlp.fc2." + suffix.Substring("linear2.".Length);
                 return MapTransformerDecoderLayerKey($"detr_decoder.layers.{idx}.{suffix}");
             }
             if (decRest == "query_embed.weight") return "transformer_decoder.query_embed";
@@ -349,28 +386,56 @@ public class Sam3CheckpointLoaderBinary
             var geoRest = rest.Substring("geometry_encoder.".Length);
             if (geoRest.StartsWith("cls_embed.") || geoRest.StartsWith("boxes_direct_project.") ||
                 geoRest.StartsWith("boxes_pool_project.") || geoRest.StartsWith("boxes_pos_enc_project.") ||
-                geoRest.StartsWith("output_layer_norm.") || geoRest.StartsWith("prompt_layer_norm.") ||
-                geoRest.StartsWith("vision_layer_norm.")) return null;
+                geoRest.StartsWith("points_direct_project.") || geoRest.StartsWith("points_pool_project.") ||
+                geoRest.StartsWith("points_pos_enc_project.") || geoRest.StartsWith("encode_norm.") ||
+                geoRest.StartsWith("img_pre_norm.") || geoRest.StartsWith("norm.")) return null;
+            geoRest = geoRest.Replace("encode.", "layers.")
+                .Replace("cross_attn_image", "cross_attn")
+                .Replace(".in_proj_weight", ".in_proj.weight")
+                .Replace(".in_proj_bias", ".in_proj.bias")
+                .Replace(".out_proj.", ".o_proj.")
+                .Replace(".linear1.", ".mlp.fc1.")
+                .Replace(".linear2.", ".mlp.fc2.")
+                .Replace(".norm1.", ".layer_norm1.")
+                .Replace(".norm2.", ".layer_norm2.")
+                .Replace(".norm3.", ".layer_norm3.");
             return MapGeometryEncoderKey($"geometry_encoder.{geoRest}");
         }
 
-        if (rest.StartsWith("mask_decoder."))
+        if (rest.StartsWith("segmentation_head."))
         {
-            return MapMaskDecoderKey($"mask_decoder.{rest}");
+            var maskRest = rest.Substring("segmentation_head.".Length)
+                .Replace("mask_predictor.mask_embed.", "mask_embedder.")
+                .Replace("cross_attend_prompt.", "prompt_cross_attn.")
+                .Replace("cross_attn_norm.", "prompt_cross_attn_norm.")
+                .Replace("semantic_seg_head.", "semantic_projection.")
+                .Replace("instance_seg_head.", "instance_projection.");
+            return MapMaskDecoderKey($"mask_decoder.{maskRest}");
         }
 
         if (rest.StartsWith("dot_prod_scoring."))
-            return MapDotProductScoringKey($"dot_product_scoring.{rest}");
+        {
+            var scoringRest = rest.Substring("dot_prod_scoring.".Length)
+                .Replace("prompt_mlp.layers.0", "text_mlp.layer1")
+                .Replace("prompt_mlp.layers.1", "text_mlp.layer2")
+                .Replace("prompt_mlp.out_norm", "text_mlp_out_norm")
+                .Replace("prompt_proj", "text_proj")
+                .Replace("hs_proj", "query_proj");
+            return MapDotProductScoringKey($"dot_product_scoring.{scoringRest}");
+        }
 
         return null;
     }
 
     private string MapHfTextKey(string langRest)
     {
+        if (langRest == "text_projection") return "text_encoder.text_projection.weight";
         if (langRest == "ln_final.weight") return "text_encoder.transformer.final_layer_norm.weight";
         if (langRest == "ln_final.bias") return "text_encoder.transformer.final_layer_norm.bias";
         if (langRest == "positional_embedding") return "text_encoder.transformer.pos_embed_buffer";
         if (langRest == "token_embedding.weight") return "text_encoder.transformer.token_embedding.weight";
+        if (langRest.StartsWith("transformer.resblocks."))
+            langRest = "layers." + langRest.Substring("transformer.resblocks.".Length);
         if (langRest.StartsWith("layers."))
         {
             var layerRest = langRest.Substring("layers.".Length);
@@ -386,13 +451,17 @@ public class Sam3CheckpointLoaderBinary
                 var attnSuffix = suffix.Substring("self_attn.".Length);
                 if (attnSuffix == "in_proj_weight") return $"text_encoder.transformer.encoder_layer_{layerIdx}.self_attn_in_proj.weight";
                 if (attnSuffix == "in_proj_bias") return $"text_encoder.transformer.encoder_layer_{layerIdx}.self_attn_in_proj.bias";
-                if (attnSuffix == "out_proj.weight") return $"text_encoder.transformer.encoder_layer_{layerIdx}.self_attn_o_proj.weight";
-                if (attnSuffix == "out_proj.bias") return $"text_encoder.transformer.encoder_layer_{layerIdx}.self_attn_o_proj.bias";
+                if (attnSuffix == "out_proj.weight") return $"text_encoder.transformer.encoder_layer_{layerIdx}.self_attn_out_proj.weight";
+                if (attnSuffix == "out_proj.bias") return $"text_encoder.transformer.encoder_layer_{layerIdx}.self_attn_out_proj.bias";
             }
             if (suffix == "mlp.c_fc.weight") return $"text_encoder.transformer.encoder_layer_{layerIdx}.fc1.weight";
             if (suffix == "mlp.c_fc.bias") return $"text_encoder.transformer.encoder_layer_{layerIdx}.fc1.bias";
             if (suffix == "mlp.c_proj.weight") return $"text_encoder.transformer.encoder_layer_{layerIdx}.fc2.weight";
             if (suffix == "mlp.c_proj.bias") return $"text_encoder.transformer.encoder_layer_{layerIdx}.fc2.bias";
+            if (suffix == "attn.in_proj_weight") return $"text_encoder.transformer.encoder_layer_{layerIdx}.self_attn_in_proj.weight";
+            if (suffix == "attn.in_proj_bias") return $"text_encoder.transformer.encoder_layer_{layerIdx}.self_attn_in_proj.bias";
+            if (suffix == "attn.out_proj.weight") return $"text_encoder.transformer.encoder_layer_{layerIdx}.self_attn_o_proj.weight";
+            if (suffix == "attn.out_proj.bias") return $"text_encoder.transformer.encoder_layer_{layerIdx}.self_attn_o_proj.bias";
         }
         return null;
     }
@@ -611,7 +680,13 @@ public class Sam3CheckpointLoaderBinary
             return $"mask_decoder.mask_embedder.layer_{layerIdx}.{suffix}";
         }
         if (rest.StartsWith("prompt_cross_attn."))
-            return $"mask_decoder.prompt_cross_attn.{rest.Substring("prompt_cross_attn.".Length)}";
+        {
+            var sub = rest.Substring("prompt_cross_attn.".Length)
+                .Replace("in_proj_weight", "in_proj.weight")
+                .Replace("in_proj_bias", "in_proj.bias")
+                .Replace("out_proj.", "o_proj.");
+            return $"mask_decoder.prompt_cross_attn.{sub}";
+        }
         if (rest.StartsWith("prompt_cross_attn_norm."))
             return $"mask_decoder.prompt_cross_attn_norm.{rest.Substring("prompt_cross_attn_norm.".Length)}";
         if (rest == "semantic_projection.weight") return "mask_decoder.semantic_projection.weight";
@@ -626,7 +701,7 @@ public class Sam3CheckpointLoaderBinary
         var rest = ckptKey.Substring("dot_product_scoring.".Length);
         if (rest.StartsWith("text_mlp.layer"))
         {
-            var sub = rest.Replace("text_mlp.layer1", "text_mlp_layer1").Replace("text_mlp.layer2", "text_mlp_layer2");
+            var sub = rest.Replace("text_mlp.layer1", "text_mlp.0").Replace("text_mlp.layer2", "text_mlp.1");
             return $"dot_product_scoring.{sub}";
         }
         if (rest == "text_mlp_out_norm.weight") return "dot_product_scoring.text_mlp_out_norm.weight";

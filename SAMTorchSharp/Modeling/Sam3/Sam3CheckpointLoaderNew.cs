@@ -60,7 +60,7 @@ public class Sam3CheckpointLoaderNew
         return Path.GetExtension(checkpointPath).ToLowerInvariant() switch
         {
             ".safetensors" => Sam3CheckpointFormat.OfficialSafetensors,
-            ".bin" => Sam3CheckpointFormat.ConvertedBinary,
+            ".bin" or ".pt" => Sam3CheckpointFormat.ConvertedBinary,
             var extension => throw new NotSupportedException(
                 $"Unsupported SAM3 checkpoint extension '{extension}'. Use .safetensors or converted .bin."),
         };
