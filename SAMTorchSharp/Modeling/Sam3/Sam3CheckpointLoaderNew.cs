@@ -9,6 +9,26 @@ using static TorchSharp.torch.nn;
 
 namespace SAMTorchSharp.Modeling.Sam3;
 
+public enum Sam3CheckpointFormat
+{
+    OfficialSafetensors,
+    ConvertedBinary,
+}
+
+public sealed record Sam3CheckpointLoadReport(
+    string Path,
+    Sam3CheckpointFormat Format,
+    int CheckpointTensorCount,
+    IReadOnlyList<string> LoadedKeys,
+    IReadOnlyList<string> MissingKeys,
+    IReadOnlyList<string> SkippedKeys,
+    IReadOnlyList<string> ShapeMismatches)
+{
+    public int LoadableTensorCount => LoadedKeys.Count + MissingKeys.Count + ShapeMismatches.Count;
+    public double Coverage => LoadableTensorCount == 0 ? 0 : LoadedKeys.Count * 100.0 / LoadableTensorCount;
+    public bool IsComplete => MissingKeys.Count == 0 && ShapeMismatches.Count == 0;
+}
+
 /// <summary>
 /// Checkpoint loader for SAM3 that matches the checkpoint's actual architecture.
 /// Uses TorchSharp.PyBridge.Safetensors for loading .safetensors files.
@@ -27,20 +47,55 @@ namespace SAMTorchSharp.Modeling.Sam3;
 /// </summary>
 public class Sam3CheckpointLoaderNew
 {
+    private enum AssignmentResult
+    {
+        Loaded,
+        Missing,
+        ShapeMismatch,
+    }
+
+    public static Sam3CheckpointFormat DetectFormat(string checkpointPath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(checkpointPath);
+        return Path.GetExtension(checkpointPath).ToLowerInvariant() switch
+        {
+            ".safetensors" => Sam3CheckpointFormat.OfficialSafetensors,
+            ".bin" => Sam3CheckpointFormat.ConvertedBinary,
+            var extension => throw new NotSupportedException(
+                $"Unsupported SAM3 checkpoint extension '{extension}'. Use .safetensors or converted .bin."),
+        };
+    }
+
     /// <summary>
     /// Load a SAM3 model from a .safetensors checkpoint file.
     /// Returns (loaded_count, skipped_count, missing_count).
     /// </summary>
     public Tuple<int, int, int> LoadModel(Sam3BaseNew model, string checkpointPath, Device device = null)
     {
+        var report = LoadModelWithReport(model, checkpointPath, device);
+        return Tuple.Create(report.LoadedKeys.Count, report.SkippedKeys.Count,
+            report.MissingKeys.Count + report.ShapeMismatches.Count);
+    }
+
+    public Sam3CheckpointLoadReport LoadModelWithReport(Sam3BaseNew model, string checkpointPath, Device device = null)
+    {
+        ArgumentNullException.ThrowIfNull(model);
+        var format = DetectFormat(checkpointPath);
+        if (format != Sam3CheckpointFormat.OfficialSafetensors)
+            throw new NotSupportedException("Sam3CheckpointLoaderNew loads official .safetensors checkpoints only.");
+
+        var path = Path.GetFullPath(checkpointPath);
+        if (!File.Exists(path))
+            throw new FileNotFoundException("SAM3 checkpoint was not found.", path);
+
         device = device ?? CPU;
         var dev = device;
 
-        var checkpoint = TorchSharp.PyBridge.Safetensors.LoadStateDict(checkpointPath);
-
-        int loaded = 0;
-        int skipped = 0;
-        int missing = 0;
+        var checkpoint = TorchSharp.PyBridge.Safetensors.LoadStateDict(path);
+        var loaded = new List<string>();
+        var missing = new List<string>();
+        var unexpected = new List<string>();
+        var shapeMismatches = new List<string>();
 
         foreach (var kvp in checkpoint)
         {
@@ -54,54 +109,41 @@ public class Sam3CheckpointLoaderNew
                 tensor = tensor.transpose(0, 1);
             }
 
-            var modelKey = MapCheckpointKeyToModelKey(ckptKey);
+            var modelKey = MapOfficialKey(ckptKey);
 
             if (modelKey == null)
             {
-                skipped++;
+                unexpected.Add(ckptKey);
                 continue;
             }
 
-            if (TrySetValueByPath(model, modelKey, tensor))
+            var assignment = TrySetValueByPath(model, modelKey, tensor, out var expectedShape);
+            if (assignment == AssignmentResult.Loaded)
             {
-                loaded++;
+                loaded.Add(modelKey);
+            }
+            else if (assignment == AssignmentResult.ShapeMismatch)
+            {
+                shapeMismatches.Add($"{ckptKey} -> {modelKey}: checkpoint=[{string.Join(",", tensor.shape)}], model=[{string.Join(",", expectedShape!)}]");
             }
             else
-            {
-                missing++;
-                // Debug: track missing keys
-                System.IO.File.AppendAllText(@"D:\SouceCode\python2net\SAMALL\missing_keys.txt",
-                    ckptKey + "\n");
-            }
+                missing.Add($"{ckptKey} -> {modelKey}");
         }
 
-        Console.WriteLine($"[CheckpointLoader] Loaded: {loaded}, Skipped: {skipped}, Missing: {missing}");
+        loaded.Sort(StringComparer.Ordinal);
+        missing.Sort(StringComparer.Ordinal);
+        unexpected.Sort(StringComparer.Ordinal);
+        shapeMismatches.Sort(StringComparer.Ordinal);
+        var report = new Sam3CheckpointLoadReport(
+            path, format, checkpoint.Count, loaded, missing, unexpected, shapeMismatches);
+        Console.WriteLine($"[CheckpointLoader] Loaded: {loaded.Count}, Skipped: {unexpected.Count}, Missing: {missing.Count}, Shape mismatch: {shapeMismatches.Count}");
         Console.WriteLine($"[CheckpointLoader] Total checkpoint tensors: {checkpoint.Count}");
-
-        // Print summary of missing key categories
-        if (missing > 0)
-        {
-            var missingLines = System.IO.File.ReadLines(@"D:\SouceCode\python2net\SAMALL\missing_keys.txt").Distinct().ToList();
-            var detrDecKeys = missingLines.Where(k => k.Contains("detr_decoder.box_head") || k.Contains("detr_decoder.presence_head") || k.Contains("detr_decoder.ref_point_head") || k.Contains("detr_decoder.box_rpb") || k.Contains("detr_decoder.presence_token")).Count();
-            var geoKeys = missingLines.Where(k => k.Contains("geometry_encoder") && (k.Contains("cls_embed") || k.Contains("boxes_") || k.Contains("output_layer_norm") || k.Contains("prompt_layer_norm") || k.Contains("vision_layer_norm"))).Count();
-            var maskDecKeys = missingLines.Where(k => k.Contains("mask_decoder.semantic_projection") || k.Contains("mask_decoder.instance_projection")).Count();
-            var textProjKeys = missingLines.Where(k => k.Contains("text_encoder.text_projection") || k.Contains("text_projection.weight")).Count();
-            var vitPosKeys = missingLines.Where(k => k.Contains("position_embeddings")).Count();
-
-            Console.WriteLine($"[CheckpointLoader] Missing key categories:");
-            Console.WriteLine($"  DETR Decoder heads (box/presence/ref/rpb): {detrDecKeys}");
-            Console.WriteLine($"  Geometry Encoder unused modules: {geoKeys}");
-            Console.WriteLine($"  Mask Decoder projections: {maskDecKeys}");
-            Console.WriteLine($"  Text Projection: {textProjKeys}");
-            Console.WriteLine($"  ViT Position: {vitPosKeys}");
-            Console.WriteLine($"  Other: {missing - detrDecKeys - geoKeys - maskDecKeys - textProjKeys - vitPosKeys}");
-        }
-
-        return Tuple.Create(loaded, skipped, missing);
+        return report;
     }
 
-    private string MapCheckpointKeyToModelKey(string ckptKey)
+    public static string? MapOfficialKey(string ckptKey)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(ckptKey);
         if (ckptKey.StartsWith("detector_model."))
             ckptKey = ckptKey.Substring("detector_model.".Length);
 
@@ -246,7 +288,7 @@ public class Sam3CheckpointLoaderNew
         return null;
     }
 
-    private string MapViTLayerKey(string rest)
+    private static string MapViTLayerKey(string rest)
     {
         var parts = rest.Split('.');
         var layerIdx = parts[1];
@@ -267,7 +309,7 @@ public class Sam3CheckpointLoaderNew
         return $"vision_backbone.block_{layerIdx}.{suffix}";
     }
 
-    private string MapTextEncoderLayerKey(string rest)
+    private static string MapTextEncoderLayerKey(string rest)
     {
         var parts = rest.Split('.');
         var layerIdx = parts[2];
@@ -303,7 +345,7 @@ public class Sam3CheckpointLoaderNew
         return null;
     }
 
-    private string MapTransformerEncoderLayerKey(string ckptKey)
+    private static string MapTransformerEncoderLayerKey(string ckptKey)
     {
         var rest = ckptKey.Substring("detr_encoder.layers.".Length);
         var parts = rest.Split('.');
@@ -352,7 +394,7 @@ public class Sam3CheckpointLoaderNew
     /// Layer norms: detr_decoder.layers.{N}.{self_attn_layer_norm|vision_cross_attn_layer_norm|mlp_layer_norm|text_cross_attn_layer_norm}
     /// C# format: transformer_decoder.layer_{N}.{self_attn|cross_attn|ca_text}.{q_proj|k_proj|v_proj|o_proj}
     /// </summary>
-    private string MapTransformerDecoderLayerKey(string ckptKey)
+    private static string MapTransformerDecoderLayerKey(string ckptKey)
     {
         var rest = ckptKey.Substring("detr_decoder.layers.".Length);
         var parts = rest.Split('.');
@@ -417,7 +459,7 @@ public class Sam3CheckpointLoaderNew
         return null;
     }
 
-    private string MapBoxHeadKey(string ckptKey)
+    private static string MapBoxHeadKey(string ckptKey)
     {
         var rest = ckptKey.Substring("detr_decoder.box_head.".Length);
         var parts = rest.Split('.');
@@ -438,7 +480,7 @@ public class Sam3CheckpointLoaderNew
         return null;
     }
 
-    private string MapPresenceHeadKey(string ckptKey)
+    private static string MapPresenceHeadKey(string ckptKey)
     {
         var rest = ckptKey.Substring("detr_decoder.presence_head.".Length);
         var parts = rest.Split('.');
@@ -458,7 +500,7 @@ public class Sam3CheckpointLoaderNew
         return null;
     }
 
-    private string MapRefPointHeadKey(string ckptKey)
+    private static string MapRefPointHeadKey(string ckptKey)
     {
         var rest = ckptKey.Substring("detr_decoder.ref_point_head.".Length);
         var parts = rest.Split('.');
@@ -477,7 +519,7 @@ public class Sam3CheckpointLoaderNew
         return null;
     }
 
-    private string MapBoxRPBKey(string ckptKey, string name)
+    private static string MapBoxRPBKey(string ckptKey, string name)
     {
         var rest = ckptKey.Substring($"detr_decoder.{name}.".Length);
         var parts = rest.Split('.');
@@ -496,7 +538,7 @@ public class Sam3CheckpointLoaderNew
         return null;
     }
 
-    private string MapGeometryEncoderKey(string ckptKey)
+    private static string MapGeometryEncoderKey(string ckptKey)
     {
         var rest = ckptKey.Substring("geometry_encoder.".Length);
 
@@ -575,7 +617,7 @@ public class Sam3CheckpointLoaderNew
         return $"geometry_encoder.{rest}";
     }
 
-    private string MapMaskDecoderKey(string ckptKey)
+    private static string MapMaskDecoderKey(string ckptKey)
     {
         var rest = ckptKey.Substring("mask_decoder.".Length);
 
@@ -622,7 +664,7 @@ public class Sam3CheckpointLoaderNew
         return $"mask_decoder.{rest}";
     }
 
-    private string MapDotProductScoringKey(string ckptKey)
+    private static string MapDotProductScoringKey(string ckptKey)
     {
         var rest = ckptKey.Substring("dot_product_scoring.".Length);
         if (rest.StartsWith("text_mlp.layer"))
@@ -650,8 +692,9 @@ public class Sam3CheckpointLoaderNew
     /// Walks the module tree by dotted name, finds the leaf parameter, and copies data.
     /// Handles ModuleList indexing (e.g., "box_head.layers[0].weight").
     /// </summary>
-    private bool TrySetValueByPath(Module module, string path, Tensor value)
+    private AssignmentResult TrySetValueByPath(Module module, string path, Tensor value, out long[]? expectedShape)
     {
+        expectedShape = null;
         var parts = path.Split('.');
         Module current = module;
 
@@ -739,7 +782,7 @@ public class Sam3CheckpointLoaderNew
             }
 
             if (child == null)
-                return false;
+                return AssignmentResult.Missing;
             current = child;
         }
 
@@ -756,6 +799,7 @@ public class Sam3CheckpointLoaderNew
         }
         if (fieldTensor is not null)
         {
+            expectedShape = fieldTensor.shape;
             // Handle shape mismatch: checkpoint may store [1, d_model] but C# expects [1, 1, d_model]
             if (fieldTensor.shape.Length != value.shape.Length)
             {
@@ -780,7 +824,7 @@ public class Sam3CheckpointLoaderNew
                             using var srcFld = expanded.contiguous();
                             using var _fld = torch.no_grad();
                             fieldTensor.copy_(srcFld);
-                            return true;
+                            return AssignmentResult.Loaded;
                         }
                     }
                 }
@@ -801,10 +845,10 @@ public class Sam3CheckpointLoaderNew
                     using var srcFld = value.contiguous();
                     using var _fld = torch.no_grad();
                     fieldTensor.copy_(srcFld);
-                    return true;
+                    return AssignmentResult.Loaded;
                 }
             }
-            return false;
+            return AssignmentResult.ShapeMismatch;
         }
 
         // First try to find as a buffer
@@ -816,6 +860,7 @@ public class Sam3CheckpointLoaderNew
         catch { }
         if (buffer is not null)
         {
+            expectedShape = buffer.shape;
             if (buffer.shape.Length == value.shape.Length)
             {
                 bool shapesMatch = true;
@@ -832,10 +877,10 @@ public class Sam3CheckpointLoaderNew
                     using var srcBuf = value.contiguous();
                     using var _buf = torch.no_grad();
                     buffer.copy_(srcBuf);
-                    return true;
+                    return AssignmentResult.Loaded;
                 }
             }
-            return false;
+            return AssignmentResult.ShapeMismatch;
         }
 
         // Fall back to looking for a parameter
@@ -849,19 +894,20 @@ public class Sam3CheckpointLoaderNew
             }
         }
         if ((object)param == null)
-            return false;
+            return AssignmentResult.Missing;
 
+        expectedShape = param.shape;
         if (param.shape.Length != value.shape.Length)
-            return false;
+            return AssignmentResult.ShapeMismatch;
         for (int i = 0; i < param.shape.Length; i++)
         {
             if (param.shape[i] != value.shape[i])
-                return false;
+                return AssignmentResult.ShapeMismatch;
         }
 
         using var src = value.contiguous();
         using var _ = torch.no_grad();
         param.copy_(src);
-        return true;
+        return AssignmentResult.Loaded;
     }
 }

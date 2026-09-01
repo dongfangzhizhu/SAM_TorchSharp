@@ -100,19 +100,22 @@ internal static class Program
         int loaded;
         int skipped;
         int missing;
+        double coverage;
         if (extension == ".safetensors")
         {
-            var result = new Sam3CheckpointLoaderNew().LoadModel(model, checkpointPath, CPU);
-            (loaded, skipped, missing) = (result.Item1, result.Item2, result.Item3);
+            var report = new Sam3CheckpointLoaderNew().LoadModelWithReport(model, checkpointPath, CPU);
+            (loaded, skipped, missing) = (report.LoadedKeys.Count, report.SkippedKeys.Count,
+                report.MissingKeys.Count + report.ShapeMismatches.Count);
+            coverage = report.Coverage;
         }
         else
         {
             var result = new Sam3CheckpointLoaderBinary().LoadModel(model, checkpointPath, CPU);
             (loaded, skipped, missing) = (result.Item1, result.Item2, result.Item3);
+            var total = loaded + skipped + missing;
+            coverage = total == 0 ? 0 : loaded * 100.0 / total;
         }
 
-        var total = loaded + skipped + missing;
-        var coverage = total == 0 ? 0 : loaded * 100.0 / total;
         Console.WriteLine($"Checkpoint: loaded={loaded}, skipped={skipped}, missing={missing}, coverage={coverage:F2}%");
         if (coverage < minCoverage)
             return Fail($"Checkpoint coverage {coverage:F2}% is below required {minCoverage:F2}%.", ValidationError);
