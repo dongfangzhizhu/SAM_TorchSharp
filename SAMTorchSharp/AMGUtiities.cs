@@ -44,6 +44,11 @@ namespace SAMTorchSharp
             _stats[key] = torch.tensor(value);
         }
 
+        public void Set(string key, List<RleElement> value)
+        {
+            _stats[key] = value;
+        }
+
         public T Get<T>(string key)
         {
             return (T)_stats[key];
@@ -54,6 +59,16 @@ namespace SAMTorchSharp
             return (Tensor)_stats[key];
         }
 
+        public List<RleElement> GetRles(string key)
+        {
+            return (List<RleElement>)_stats[key];
+        }
+
+        public void Remove(string key)
+        {
+            _stats.Remove(key);
+        }
+
         public bool ContainsKey(string key)
         {
             return _stats.ContainsKey(key);
@@ -62,12 +77,21 @@ namespace SAMTorchSharp
         /// <summary>Filter entries by a boolean mask.</summary>
         public void Filter(Tensor keep)
         {
-            var keepTensor = keep.to(ScalarType.Bool);
+            var keepTensor = keep.dtype == ScalarType.Bool
+                ? keep
+                : keep.to(ScalarType.Int64);
+            var indices = keepTensor.dtype == ScalarType.Bool
+                ? keepTensor.nonzero().flatten().data<long>().ToArray()
+                : keepTensor.flatten().data<long>().ToArray();
             foreach (var kvp in _stats)
             {
                 if (kvp.Value is Tensor t)
                 {
                     _stats[kvp.Key] = t[keepTensor];
+                }
+                else if (kvp.Value is List<RleElement> rles)
+                {
+                    _stats[kvp.Key] = indices.Select(index => rles[checked((int)index)]).ToList();
                 }
             }
         }
@@ -84,6 +108,10 @@ namespace SAMTorchSharp
                 else if (kvp.Value is Tensor v && _stats[kvp.Key] is Tensor existing)
                 {
                     _stats[kvp.Key] = cat(new[] { existing, v }, dim: 0);
+                }
+                else if (kvp.Value is List<RleElement> rles && _stats[kvp.Key] is List<RleElement> existingRles)
+                {
+                    existingRles.AddRange(rles);
                 }
             }
         }
@@ -177,6 +205,7 @@ namespace SAMTorchSharp
 
             if (masks.dim() == 4)
                 masks = masks.squeeze(1);
+            masks = masks.to(ScalarType.Bool);
 
             var H = masks.shape[1];
             var W = masks.shape[2];
@@ -299,10 +328,10 @@ namespace SAMTorchSharp
         /// <summary>Check if a box is near the edge of a crop but not the edge of the original image.</summary>
         public static Tensor IsBoxNearCropEdge(Tensor boxes, int[] cropBox, int[] origBox, float atol = 20.0f)
         {
-            var uncropped = UncropBoxes(boxes, cropBox[0], cropBox[1]);
+            var uncropped = UncropBoxes(boxes, cropBox[0], cropBox[1]).to(ScalarType.Float32);
 
-            Tensor cropBoxT = tensor(cropBox, device: boxes.device).unsqueeze(0);
-            Tensor origBoxT = tensor(origBox, device: boxes.device).unsqueeze(0);
+            Tensor cropBoxT = tensor(cropBox, dtype: ScalarType.Float32, device: boxes.device).unsqueeze(0);
+            Tensor origBoxT = tensor(origBox, dtype: ScalarType.Float32, device: boxes.device).unsqueeze(0);
 
             var nearCropEdge = isclose(uncropped, cropBoxT, atol: atol);
             var nearImageEdge = isclose(uncropped, origBoxT, atol: atol);

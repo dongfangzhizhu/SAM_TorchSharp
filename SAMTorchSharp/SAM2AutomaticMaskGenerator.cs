@@ -65,8 +65,6 @@ namespace SAMTorchSharp
                 pointsPerSide, cropNLayers, cropNPointsDownscaleFactor);
         }
 
-        private List<RleElement> _pendingRles = new();
-
         public List<MaskRecord> Generate(Tensor image)
         {
             var maskData = _GenerateMasks(image);
@@ -76,10 +74,7 @@ namespace SAMTorchSharp
             var points = maskData.GetTensor("points");
             var stabilityScores = maskData.GetTensor("stability_score");
             var cropBoxes = maskData.GetTensor("crop_boxes");
-            var masksFinal = maskData.GetTensor("masks_final");
-
-            // Convert masks to RLE
-            var rles = AMGUtiities.MaskToRle(masksFinal);
+            var rles = maskData.GetRles("rles");
 
             var currAnns = new List<MaskRecord>();
             int n = (int)boxes.size(0);
@@ -124,7 +119,7 @@ namespace SAMTorchSharp
                 var areaY = xywh.index(new TensorIndex[] { TensorIndex.Ellipsis, 3 });
                 var invArea = 1.0 / (areaX * areaY + 1e-6);
 
-                var categories = zeros(boxes.size(0), device: boxes.device);
+                var categories = zeros(boxes.size(0), dtype: ScalarType.Int64, device: boxes.device);
                 var keep = _BatchedNms(boxes, invArea, categories, _cropNmsThresh);
                 data.Filter(keep.to(ScalarType.Bool));
             }
@@ -139,9 +134,9 @@ namespace SAMTorchSharp
             int x1 = cropBox[2];
             int y1 = cropBox[3];
 
-            var yRange = arange((long)y0, (long)y1);
-            var xRange = arange((long)x0, (long)x1);
-            var croppedIm = image.index(new TensorIndex[] { TensorIndex.Tensor(yRange), TensorIndex.Tensor(xRange), TensorIndex.Ellipsis });
+            var croppedIm = image
+                .narrow(0, y0, y1 - y0)
+                .narrow(1, x0, x1 - x0);
 
             var croppedH = (int)croppedIm.size(0);
             var croppedW = (int)croppedIm.size(1);
@@ -169,7 +164,7 @@ namespace SAMTorchSharp
             {
                 var boxes = data.GetTensor("boxes");
                 var iouPreds = data.GetTensor("iou_preds");
-                var categories = zeros(boxes.size(0), device: boxes.device);
+                var categories = zeros(boxes.size(0), dtype: ScalarType.Int64, device: boxes.device);
                 var keep = _BatchedNms(boxes, iouPreds, categories, _boxNmsThresh);
                 data.Filter(keep.to(ScalarType.Bool));
             }
@@ -200,8 +195,8 @@ namespace SAMTorchSharp
 
             var labels = ones(new long[] { ptsTensor.size(0) }, dtype: ScalarType.Int32);
             var (masks, iouPreds, lowResMasks) = _predictor.Predict(
-                pointCoords: ptsTensor,
-                pointLabels: labels.to(ScalarType.Int32),
+                pointCoords: ptsTensor.unsqueeze(1),
+                pointLabels: labels.to(ScalarType.Int32).unsqueeze(1),
                 multimaskOutput: _multimaskOutput,
                 returnLogits: true);
 
@@ -240,7 +235,7 @@ namespace SAMTorchSharp
 
             var threshed = (data.GetTensor("masks") > _maskThreshold);
             data.Set("masks", threshed.to(ScalarType.Bool));
-            data.Set("boxes", AMGUtiities.BatchedMaskToBox(threshed.to(ScalarType.Float32)));
+            data.Set("boxes", AMGUtiities.BatchedMaskToBox(threshed));
 
             var origBox = new[] { 0, 0, origW, origH };
             var keepMaskArr = ~AMGUtiities.IsBoxNearCropEdge(
@@ -253,10 +248,8 @@ namespace SAMTorchSharp
             int xc0 = cropBox[0], yc0 = cropBox[1], xc1 = cropBox[2], yc1 = cropBox[3];
             Tensor uncropped = AMGUtiities.UncropMasks(
                 data.GetTensor("masks").to(ScalarType.Float32), xc0, yc0, xc1, yc1, origH, origW);
-            data.Set("masks", uncropped.to(ScalarType.Bool));
-
-            // Store mask tensor for later RLE conversion
-            data.Set("masks_final", uncropped.to(ScalarType.Bool));
+            data.Set("rles", AMGUtiities.MaskToRle(uncropped.to(ScalarType.Bool)));
+            data.Remove("masks");
 
             return data;
         }
@@ -264,7 +257,7 @@ namespace SAMTorchSharp
         private Tensor _BatchedNms(Tensor boxes, Tensor scores, Tensor categories, float iouThresh)
         {
             var (sortedScores, sortedIdx) = scores.sort(descending: true);
-            var sortedBoxes = boxes[sortedIdx];
+            var sortedBoxes = boxes[sortedIdx].to(ScalarType.Float32);
             var sortedCategories = categories[sortedIdx];
 
             int n = (int)sortedBoxes.size(0);
