@@ -1,5 +1,7 @@
 namespace ConsistencyTest.Tests;
 
+using SAMTorchSharp.Modeling.Sam3;
+
 public sealed class CliOptionsTests
 {
     [Theory]
@@ -41,5 +43,21 @@ public sealed class CliOptionsTests
         var error = Assert.Throws<CliException>(() => options.GetOptionalPath("points"));
 
         Assert.Contains("does not exist", error.Message);
+    }
+
+    [Theory]
+    [InlineData("model.safetensors", Sam3CheckpointFormat.OfficialSafetensors)]
+    [InlineData("model.bin", Sam3CheckpointFormat.ConvertedBinary)]
+    [InlineData("model.pt", Sam3CheckpointFormat.ConvertedBinary)]
+    public void Sam3RunAcceptsSupportedCheckpointRoutes(string path, Sam3CheckpointFormat expected)
+    {
+        Assert.Equal(expected, Program.GetSam3CheckpointFormat(path));
+    }
+
+    [Fact]
+    public void Sam3RunRejectsUnsupportedCheckpointRoute()
+    {
+        var exception = Assert.Throws<CliException>(() => Program.GetSam3CheckpointFormat("model.ckpt"));
+        Assert.Contains("sibling .bin", exception.Message);
     }
 }

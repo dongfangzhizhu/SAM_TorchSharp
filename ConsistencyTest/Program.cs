@@ -89,9 +89,7 @@ internal static class Program
         if (deviceName != "cpu")
             throw new CliException("Only --device cpu is supported by the configured libtorch-cpu-win-x64 runtime.");
 
-        var extension = Path.GetExtension(checkpointPath).ToLowerInvariant();
-        if (extension is not ".safetensors" and not ".bin")
-            throw new CliException("--checkpoint must be an existing .safetensors or converted .bin file. Convert .pt explicitly before running the CLI.");
+        var checkpointFormat = GetSam3CheckpointFormat(checkpointPath);
 
         Directory.CreateDirectory(outputDirectory);
         Console.WriteLine("Building SAM3 detector model...");
@@ -102,7 +100,7 @@ internal static class Program
         int skipped;
         int missing;
         double coverage;
-        if (extension == ".safetensors")
+        if (checkpointFormat == Sam3CheckpointFormat.OfficialSafetensors)
         {
             var report = new Sam3CheckpointLoaderNew().LoadModelWithReport(model, checkpointPath, CPU);
             WriteSam3CheckpointReport(outputDirectory, report);
@@ -167,6 +165,18 @@ internal static class Program
 
         Console.WriteLine($"Inference completed in {stopwatch.ElapsedMilliseconds} ms.");
         return 0;
+    }
+
+    internal static Sam3CheckpointFormat GetSam3CheckpointFormat(string checkpointPath)
+    {
+        try
+        {
+            return Sam3CheckpointLoaderNew.DetectFormat(checkpointPath);
+        }
+        catch (NotSupportedException exception)
+        {
+            throw new CliException($"--checkpoint must be an existing .safetensors, converted .bin, or .pt file with a converted sibling .bin. {exception.Message}");
+        }
     }
 
     private static int RunSam3Checkpoint(CliOptions options)

@@ -126,7 +126,7 @@ inference also writes normalized `pred_boxes.npy` and `pred_logits.npy`. The und
 forward result contains per-query mask logits; the WebDemo resizes, thresholds, and visualizes
 those masks at the original image size.
 
-The configured native dependency is CPU-only. A `.pt` checkpoint must be converted explicitly to `.bin`; the CLI does not invoke Python or create an implicit multi-gigabyte copy.
+The configured native dependency is CPU-only. A `.pt` checkpoint must be converted explicitly to a same-name `.bin` first; passing the `.pt` path only routes to that sibling `.bin`. The CLI does not invoke Python or create an implicit multi-gigabyte copy.
 
 ## Exit codes
 
