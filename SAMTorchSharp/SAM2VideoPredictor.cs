@@ -324,7 +324,8 @@ namespace SAMTorchSharp
         public (int FrameIdx, List<long> ObjIds, Tensor VideoResMasks)? ClearAllPromptsInFrame(
             Dictionary<string, object> state,
             int frameIdx,
-            long objId)
+            long objId,
+            bool needOutput = true)
         {
             var objIdx = _ObjIdToIdx(state, objId);
 
@@ -348,6 +349,9 @@ namespace SAMTorchSharp
                 framesTracked[objIdx].Remove(frameIdx);
             }
 
+            if (!needOutput)
+                return null;
+
             var objIds = (List<long>)state["obj_ids"];
             bool isCond = false;
             foreach (var tmpDict in tempOutputDicts.Values)
@@ -363,6 +367,73 @@ namespace SAMTorchSharp
             var (_, videoResMasks) = _GetOrigVideoResOutput(state, consolidated["pred_masks"]);
 
             return (frameIdx, objIds, videoResMasks);
+        }
+
+        /// <summary>
+        /// Remove an object and compact all per-object state to contiguous indices.
+        /// </summary>
+        public (List<long> ObjIds, List<(int FrameIdx, Tensor VideoResMasks)> UpdatedFrames) RemoveObject(
+            Dictionary<string, object> state,
+            long objId,
+            bool strict = false,
+            bool needOutput = true)
+        {
+            var objIdToIdx = (ConcurrentDictionary<long, long>)state["obj_id_to_idx"];
+            var objIds = (List<long>)state["obj_ids"];
+            if (!objIdToIdx.TryGetValue(objId, out var oldObjIdx))
+            {
+                if (strict)
+                    throw new InvalidOperationException(
+                        $"Cannot remove object id {objId} because it does not exist. Existing object ids: {string.Join(", ", objIds)}.");
+                return (objIds, new List<(int, Tensor)>());
+            }
+
+            if (objIds.Count == 1)
+            {
+                ResetState(state);
+                return ((List<long>)state["obj_ids"], new List<(int, Tensor)>());
+            }
+
+            var pointInputs = (Dictionary<long, Dictionary<int, PointInputPerFrame>>)state["point_inputs_per_obj"];
+            var maskInputs = (Dictionary<long, Dictionary<int, Tensor>>)state["mask_inputs_per_obj"];
+            var inputFrames = pointInputs[oldObjIdx].Keys.Concat(maskInputs[oldObjIdx].Keys).Distinct().Order().ToArray();
+            foreach (var frameIdx in inputFrames)
+                ClearAllPromptsInFrame(state, frameIdx, objId, needOutput: false);
+
+            var remaining = objIds.Where(id => id != objId).ToList();
+            var oldIndices = remaining.Select(id => objIdToIdx[id]).ToArray();
+            objIdToIdx.Clear();
+            var objIdxToId = (ConcurrentDictionary<long, long>)state["obj_idx_to_id"];
+            objIdxToId.Clear();
+            objIds.Clear();
+            for (int newIdx = 0; newIdx < remaining.Count; newIdx++)
+            {
+                objIdToIdx[remaining[newIdx]] = newIdx;
+                objIdxToId[newIdx] = remaining[newIdx];
+                objIds.Add(remaining[newIdx]);
+            }
+
+            RemapObjectState(pointInputs, oldIndices);
+            RemapObjectState(maskInputs, oldIndices);
+            RemapObjectState((Dictionary<long, ObjectOutputDict>)state["output_dict_per_obj"], oldIndices);
+            RemapObjectState((Dictionary<long, ObjectOutputDict>)state["temp_output_dict_per_obj"], oldIndices);
+            RemapObjectState((Dictionary<long, Dictionary<int, FrameTrackedInfo>>)state["frames_tracked_per_obj"], oldIndices);
+
+            var updatedFrames = new List<(int FrameIdx, Tensor VideoResMasks)>();
+            if (needOutput)
+            {
+                var tempOutputDicts = (Dictionary<long, ObjectOutputDict>)state["temp_output_dict_per_obj"];
+                foreach (var frameIdx in inputFrames)
+                {
+                    bool isCond = tempOutputDicts.Values.Any(output => output.CondFrameOutputs.ContainsKey(frameIdx));
+                    var consolidated = _ConsolidateTempOutputAcrossObj(
+                        state, frameIdx, isCond, consolidateAtVideoRes: true);
+                    var (_, videoResMasks) = _GetOrigVideoResOutput(state, consolidated["pred_masks"]);
+                    updatedFrames.Add((frameIdx, videoResMasks));
+                }
+            }
+
+            return (objIds, updatedFrames);
         }
 
         /// <summary>
@@ -522,6 +593,14 @@ namespace SAMTorchSharp
             framesTracked[idx] = new Dictionary<int, FrameTrackedInfo>();
 
             return idx;
+        }
+
+        private static void RemapObjectState<T>(Dictionary<long, T> container, IReadOnlyList<long> oldIndices)
+        {
+            var remainingValues = oldIndices.Select(oldIdx => container[oldIdx]).ToArray();
+            container.Clear();
+            for (int newIdx = 0; newIdx < remainingValues.Length; newIdx++)
+                container[newIdx] = remainingValues[newIdx];
         }
 
         private void _GetImageFeature(Dictionary<string, object> state, int frameIdx, long batchSize)

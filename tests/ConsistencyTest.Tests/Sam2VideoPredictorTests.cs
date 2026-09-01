@@ -110,4 +110,47 @@ public sealed class Sam2VideoPredictorTests
         Assert.Empty((Dictionary<long, ObjectOutputDict>)state["temp_output_dict_per_obj"]);
         Assert.Empty((Dictionary<long, Dictionary<int, FrameTrackedInfo>>)state["frames_tracked_per_obj"]);
     }
+
+    [Fact]
+    public void ClearsPromptsRemovesObjectsAndAllowsObjectsAddedDuringTracking()
+    {
+        using var model = BuildSam2.BuildSam2HieraTiny(imageSize: 64);
+        using var predictor = new SAM2VideoPredictor(model);
+        using var frames = rand(2, 3, 64, 64);
+        using var firstPoint = tensor(new float[] { 12, 12 }).reshape(1, 2);
+        using var secondPoint = tensor(new float[] { 20, 20 }).reshape(1, 2);
+        using var thirdPoint = tensor(new float[] { 24, 24 }).reshape(1, 2);
+        using var labels = tensor(new long[] { 1 });
+        var state = predictor.InitState(frames, originalHeight: 32, originalWidth: 32);
+
+        var first = predictor.AddNewPointsOrBox(state, 0, objId: 10, firstPoint, labels);
+        var second = predictor.AddNewPointsOrBox(state, 0, objId: 20, secondPoint, labels);
+        var initialPropagation = predictor.PropagateInVideo(state).ToList();
+        var third = predictor.AddNewPointsOrBox(state, 1, objId: 30, thirdPoint, labels);
+        var cleared = predictor.ClearAllPromptsInFrame(state, 1, objId: 30);
+        var readded = predictor.AddNewPointsOrBox(state, 1, objId: 30, thirdPoint, labels);
+        var removed = predictor.RemoveObject(state, objId: 20);
+        var finalPropagation = predictor.PropagateInVideo(state).ToList();
+
+        Assert.NotNull(cleared);
+        Assert.Equal([10L, 30L], removed.ObjIds);
+        Assert.Single(removed.UpdatedFrames);
+        Assert.Equal(0, removed.UpdatedFrames[0].FrameIdx);
+        Assert.Equal([2L, 1L, 32L, 32L], removed.UpdatedFrames[0].VideoResMasks.shape);
+        var mappings = (System.Collections.Concurrent.ConcurrentDictionary<long, long>)state["obj_id_to_idx"];
+        Assert.Equal(0, mappings[10]);
+        Assert.Equal(1, mappings[30]);
+        Assert.Equal([0L, 1L], ((Dictionary<long, ObjectOutputDict>)state["output_dict_per_obj"]).Keys.Order().ToArray());
+        Assert.Contains(1, ((Dictionary<long, Dictionary<int, PointInputPerFrame>>)state["point_inputs_per_obj"])[1].Keys);
+        Assert.All(finalPropagation, result => Assert.Equal([10L, 30L], result.ObjIds));
+
+        first.VideoResMasks.Dispose();
+        second.VideoResMasks.Dispose();
+        third.VideoResMasks.Dispose();
+        cleared.Value.VideoResMasks.Dispose();
+        readded.VideoResMasks.Dispose();
+        removed.UpdatedFrames.ForEach(result => result.VideoResMasks.Dispose());
+        initialPropagation.ForEach(result => result.VideoResMasks.Dispose());
+        finalPropagation.ForEach(result => result.VideoResMasks.Dispose());
+    }
 }
