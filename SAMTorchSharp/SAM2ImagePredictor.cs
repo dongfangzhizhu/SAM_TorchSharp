@@ -150,9 +150,10 @@ namespace SAMTorchSharp
         private readonly Sam2Base _model;
         private readonly SAM2Transforms _transforms;
         private bool _isImageSet = false;
+        private bool _isBatch = false;
         private Tensor? _imageEmbedding;
         private IList<Tensor>? _highResFeatures;
-        private long[]? _origHw;
+        private List<long[]>? _origHw;
         private Device _device;
 
         public float MaskThreshold { get; set; }
@@ -209,31 +210,86 @@ namespace SAMTorchSharp
                 throw new ArgumentException("Image must have exactly 3 RGB channels in [H,W,3] or [3,H,W] layout.", nameof(image));
             }
 
-            _origHw = new long[] { h, w };
+            _origHw = new List<long[]> { new long[] { h, w } };
 
-            var inputImage = _transforms.__call(image);
-            inputImage = inputImage.unsqueeze(0).to(_device);
+            using var transformedImage = _transforms.__call(image);
+            using var inputImage = transformedImage.unsqueeze(0).to(_device);
 
-            var backboneOut = _model.ForwardImage(inputImage);
-            var (visionFeats, _, _) = _model.PrepareBackboneFeatures(backboneOut);
+            SetBackboneFeatures(inputImage);
+            _isBatch = false;
+            _isImageSet = true;
+        }
+
+        /// <summary>
+        /// Set a batch of RGB images for prediction. The images may have different
+        /// original sizes; all backbone embeddings are computed in one batch.
+        /// </summary>
+        public void SetImageBatch(IReadOnlyList<Tensor> images)
+        {
+            ArgumentNullException.ThrowIfNull(images);
+            if (images.Count == 0)
+                throw new ArgumentException("At least one image is required.", nameof(images));
+
+            using var noGrad = no_grad();
+            ResetPredictor();
+
+            _origHw = new List<long[]>(images.Count);
+            var transformedImages = new List<Tensor>(images.Count);
+            try
+            {
+                foreach (var image in images)
+                {
+                    var (height, width) = GetImageSize(image);
+                    _origHw.Add(new long[] { height, width });
+                    transformedImages.Add(_transforms.__call(image));
+                }
+
+                using var imageBatch = stack(transformedImages.ToArray()).to(_device);
+                SetBackboneFeatures(imageBatch);
+                _isBatch = true;
+                _isImageSet = true;
+            }
+            finally
+            {
+                foreach (var transformedImage in transformedImages)
+                    transformedImage.Dispose();
+            }
+        }
+
+        private static (long Height, long Width) GetImageSize(Tensor image)
+        {
+            if (image.dim() != 3)
+                throw new ArgumentException("Image must be a 3D RGB tensor in [H,W,3] or [3,H,W] layout.", nameof(image));
+
+            if (image.size(2) == 3)
+                return (image.size(0), image.size(1));
+            if (image.size(0) == 3)
+                return (image.size(1), image.size(2));
+
+            throw new ArgumentException("Image must have exactly 3 RGB channels in [H,W,3] or [3,H,W] layout.", nameof(image));
+        }
+
+        private void SetBackboneFeatures(Tensor inputImages)
+        {
+            var backboneOut = _model.ForwardImage(inputImages);
+            var (visionFeats, _, featureSizes) = _model.PrepareBackboneFeatures(backboneOut);
 
             if (_model.directly_add_no_mem_embed)
             {
                 visionFeats[visionFeats.Count - 1] = visionFeats[visionFeats.Count - 1] + _model.no_mem_embed;
             }
 
-            var bbFeatSizes = new[] { (256L, 256L), (128L, 128L), (64L, 64L) };
             var feats = new Tensor[visionFeats.Count];
             for (int i = 0; i < visionFeats.Count; i++)
             {
                 var feat = visionFeats[i];
-                var (fh, fw) = bbFeatSizes[Math.Min(i, bbFeatSizes.Length - 1)];
-                feats[i] = feat.permute(new long[] { 1, 2, 0 }).view(new long[] { 1, -1, fh, fw });
+                var (featureHeight, featureWidth) = featureSizes[i];
+                feats[i] = feat.permute(new long[] { 1, 2, 0 }).view(
+                    new long[] { inputImages.size(0), -1, featureHeight, featureWidth });
             }
 
             _imageEmbedding = feats[^1];
             _highResFeatures = feats.Take(feats.Length - 1).ToList();
-            _isImageSet = true;
         }
 
         /// <summary>
@@ -251,6 +307,75 @@ namespace SAMTorchSharp
             using var noGrad = no_grad();
             if (!_isImageSet)
                 throw new InvalidOperationException("An image must be set with SetImage before prediction.");
+            if (_isBatch)
+                throw new InvalidOperationException("A batch is set; use PredictBatch for prediction.");
+
+            return PredictInternal(pointCoords, pointLabels, box, maskInput,
+                multimaskOutput, returnLogits, normalizeCoordinates, imageIndex: 0);
+        }
+
+        /// <summary>
+        /// Predict masks for every image previously supplied to <see cref="SetImageBatch"/>.
+        /// Each prompt list must either be null or contain one entry per image.
+        /// </summary>
+        public IReadOnlyList<(Tensor Masks, Tensor IouPredictions, Tensor LowResMasks)> PredictBatch(
+            IReadOnlyList<Tensor?>? pointCoordsBatch = null,
+            IReadOnlyList<Tensor?>? pointLabelsBatch = null,
+            IReadOnlyList<Tensor?>? boxBatch = null,
+            IReadOnlyList<Tensor?>? maskInputBatch = null,
+            bool multimaskOutput = true,
+            bool returnLogits = false,
+            bool normalizeCoordinates = true)
+        {
+            using var noGrad = no_grad();
+            if (!_isImageSet)
+                throw new InvalidOperationException("An image batch must be set with SetImageBatch before prediction.");
+            if (!_isBatch)
+                throw new InvalidOperationException("A single image is set; use Predict for prediction.");
+
+            int imageCount = _origHw!.Count;
+            ValidatePromptBatch(pointCoordsBatch, imageCount, nameof(pointCoordsBatch));
+            ValidatePromptBatch(pointLabelsBatch, imageCount, nameof(pointLabelsBatch));
+            ValidatePromptBatch(boxBatch, imageCount, nameof(boxBatch));
+            ValidatePromptBatch(maskInputBatch, imageCount, nameof(maskInputBatch));
+
+            var results = new List<(Tensor, Tensor, Tensor)>(imageCount);
+            for (int imageIndex = 0; imageIndex < imageCount; imageIndex++)
+            {
+                results.Add(PredictInternal(
+                    GetPrompt(pointCoordsBatch, imageIndex),
+                    GetPrompt(pointLabelsBatch, imageIndex),
+                    GetPrompt(boxBatch, imageIndex),
+                    GetPrompt(maskInputBatch, imageIndex),
+                    multimaskOutput,
+                    returnLogits,
+                    normalizeCoordinates,
+                    imageIndex));
+            }
+
+            return results;
+        }
+
+        private static void ValidatePromptBatch(IReadOnlyList<Tensor?>? prompts, int imageCount, string parameterName)
+        {
+            if (prompts is not null && prompts.Count != imageCount)
+                throw new ArgumentException($"{parameterName} must contain one entry per image ({imageCount}).", parameterName);
+        }
+
+        private static Tensor? GetPrompt(IReadOnlyList<Tensor?>? prompts, int imageIndex)
+            => prompts is null ? null : prompts[imageIndex];
+
+        private (Tensor Masks, Tensor IouPredictions, Tensor LowResMasks) PredictInternal(
+            Tensor? pointCoords,
+            Tensor? pointLabels,
+            Tensor? box,
+            Tensor? maskInput,
+            bool multimaskOutput,
+            bool returnLogits,
+            bool normalizeCoordinates,
+            int imageIndex)
+        {
+            var originalSize = _origHw![imageIndex];
 
             Tensor? unnormCoords = null;
             Tensor? labels = null;
@@ -262,7 +387,7 @@ namespace SAMTorchSharp
                     throw new ArgumentException("point_labels must be supplied if point_coords is supplied.");
 
                 unnormCoords = normalizeCoordinates
-                    ? _transforms.TransformCoordinates(pointCoords, _origHw![0], _origHw[1]).to(_device)
+                    ? _transforms.TransformCoordinates(pointCoords, originalSize[0], originalSize[1]).to(_device)
                     : pointCoords.to(_device);
                 labels = pointLabels.to(_device).to(ScalarType.Int32);
 
@@ -274,9 +399,10 @@ namespace SAMTorchSharp
             {
                 var boxCoordinates = box.reshape(-1, 2, 2);
                 unnormBox = (normalizeCoordinates
-                    ? _transforms.TransformCoordinates(boxCoordinates, _origHw![0], _origHw[1])
-                    : boxCoordinates).to(_device).reshape(1, 2, 2);
-                var boxLabels = tensor(new long[] { 2, 3 }, dtype: ScalarType.Int32, device: _device).reshape(1, 2);
+                    ? _transforms.TransformCoordinates(boxCoordinates, originalSize[0], originalSize[1])
+                    : boxCoordinates).to(_device).reshape(-1, 2, 2);
+                var boxLabels = tensor(new long[] { 2, 3 }, dtype: ScalarType.Int32, device: _device)
+                    .reshape(1, 2).repeat(unnormBox.size(0), 1);
                 if (unnormCoords is not null)
                 {
                     unnormCoords = cat(new[] { unnormBox, unnormCoords }, dim: 1);
@@ -306,19 +432,34 @@ namespace SAMTorchSharp
 
             bool batchedMode = concatPoints is not null && concatPoints.Item1.size(0) > 1;
 
-            var highResFeatures = _highResFeatures ?? new List<Tensor>();
+            using var imageEmbedding = _isBatch
+                ? _imageEmbedding![imageIndex].unsqueeze(0)
+                : _imageEmbedding!.alias();
+            var highResFeatures = _isBatch
+                ? _highResFeatures!.Select(feature => feature[imageIndex].unsqueeze(0)).ToList()
+                : (_highResFeatures ?? new List<Tensor>()).Select(feature => feature.alias()).ToList();
 
-            var (lowResMultimasks, ious, _, _) = _model.sam_mask_decoder.forward(
-                _imageEmbedding!,
-                _model.sam_prompt_encoder.get_dense_pe(),
-                sparseEmbeddings,
-                denseEmbeddings,
-                multimaskOutput,
-                batchedMode,
-                highResFeatures);
+            Tensor lowResMultimasks;
+            Tensor ious;
+            try
+            {
+                (lowResMultimasks, ious, _, _) = _model.sam_mask_decoder.forward(
+                    imageEmbedding,
+                    _model.sam_prompt_encoder.get_dense_pe(),
+                    sparseEmbeddings,
+                    denseEmbeddings,
+                    multimaskOutput,
+                    batchedMode,
+                    highResFeatures);
+            }
+            finally
+            {
+                foreach (var feature in highResFeatures)
+                    feature.Dispose();
+            }
 
             var fullResolutionMasks = _transforms.PostprocessMasks(
-                lowResMultimasks, _origHw![0], _origHw[1]);
+                lowResMultimasks, originalSize[0], originalSize[1]);
             Tensor masks;
             if (returnLogits)
             {
@@ -341,6 +482,7 @@ namespace SAMTorchSharp
                 foreach (var feature in _highResFeatures)
                     feature.Dispose();
             _isImageSet = false;
+            _isBatch = false;
             _imageEmbedding = null;
             _highResFeatures = null;
             _origHw = null;
