@@ -105,9 +105,12 @@ dotnet run --project .\ConsistencyTest.csproj -- sam3-run `
 `--image` is optional for backward compatibility. When supplied, it must be a finite float32 NCHW
 array with shape `[1,3,1008,1008]`, resized and normalized with ImageNet mean
 `[0.485,0.456,0.406]` and standard deviation `[0.229,0.224,0.225]`. When omitted, the command uses
-the seeded random diagnostic input. The CLI currently writes normalized `pred_boxes.npy` and
-`pred_logits.npy`. The underlying model forward result also contains per-query mask logits; the
-WebDemo resizes, thresholds, and visualizes those masks at the original image size.
+the seeded random diagnostic input. For official `.safetensors` checkpoints the command always
+writes `checkpoint-report.json` before coverage validation or inference. The report contains the
+loaded, missing, skipped, and shape-mismatched keys plus the loadable-tensor coverage. Successful
+inference also writes normalized `pred_boxes.npy` and `pred_logits.npy`. The underlying model
+forward result contains per-query mask logits; the WebDemo resizes, thresholds, and visualizes
+those masks at the original image size.
 
 The configured native dependency is CPU-only. A `.pt` checkpoint must be converted explicitly to `.bin`; the CLI does not invoke Python or create an implicit multi-gigabyte copy.
 

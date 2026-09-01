@@ -1,4 +1,5 @@
 using SAMTorchSharp.Modeling.Sam3;
+using System.Text.Json;
 
 namespace ConsistencyTest.Tests;
 
@@ -63,5 +64,43 @@ public sealed class Sam3CheckpointLoaderTests
         Assert.Equal(4, report.LoadableTensorCount);
         Assert.Equal(50, report.Coverage);
         Assert.False(report.IsComplete);
+    }
+
+    [Fact]
+    public void WritesStructuredCheckpointReport()
+    {
+        var outputDirectory = Path.Combine(Path.GetTempPath(), $"sam3-report-{Guid.NewGuid():N}");
+        var report = new Sam3CheckpointLoadReport(
+            "model.safetensors",
+            Sam3CheckpointFormat.OfficialSafetensors,
+            5,
+            ["loaded.one", "loaded.two"],
+            ["missing.one"],
+            ["tracker.one"],
+            ["shape.one: expected [2], checkpoint [3]"]);
+
+        try
+        {
+            var reportPath = Program.WriteSam3CheckpointReport(outputDirectory, report);
+
+            Assert.Equal(Path.Combine(outputDirectory, "checkpoint-report.json"), reportPath);
+            using var document = JsonDocument.Parse(File.ReadAllText(reportPath));
+            var root = document.RootElement;
+            Assert.Equal("OfficialSafetensors", root.GetProperty("Format").GetString());
+            Assert.Equal(5, root.GetProperty("CheckpointTensorCount").GetInt32());
+            Assert.Equal(2, root.GetProperty("LoadedKeys").GetArrayLength());
+            Assert.Equal("missing.one", root.GetProperty("MissingKeys")[0].GetString());
+            Assert.Equal("tracker.one", root.GetProperty("SkippedKeys")[0].GetString());
+            Assert.Equal("shape.one: expected [2], checkpoint [3]",
+                root.GetProperty("ShapeMismatches")[0].GetString());
+            Assert.Equal(4, root.GetProperty("LoadableTensorCount").GetInt32());
+            Assert.Equal(50, root.GetProperty("Coverage").GetDouble());
+            Assert.False(root.GetProperty("IsComplete").GetBoolean());
+        }
+        finally
+        {
+            if (Directory.Exists(outputDirectory))
+                Directory.Delete(outputDirectory, recursive: true);
+        }
     }
 }

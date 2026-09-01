@@ -104,6 +104,7 @@ internal static class Program
         if (extension == ".safetensors")
         {
             var report = new Sam3CheckpointLoaderNew().LoadModelWithReport(model, checkpointPath, CPU);
+            WriteSam3CheckpointReport(outputDirectory, report);
             (loaded, skipped, missing) = (report.LoadedKeys.Count, report.SkippedKeys.Count,
                 report.MissingKeys.Count + report.ShapeMismatches.Count);
             coverage = report.Coverage;
@@ -164,6 +165,25 @@ internal static class Program
 
         Console.WriteLine($"Inference completed in {stopwatch.ElapsedMilliseconds} ms.");
         return 0;
+    }
+
+    internal static string WriteSam3CheckpointReport(
+        string outputDirectory,
+        Sam3CheckpointLoadReport report)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(outputDirectory);
+        ArgumentNullException.ThrowIfNull(report);
+
+        var directory = Path.GetFullPath(outputDirectory);
+        Directory.CreateDirectory(directory);
+        var reportPath = Path.Combine(directory, "checkpoint-report.json");
+        File.WriteAllText(reportPath, JsonSerializer.Serialize(report, new JsonSerializerOptions
+        {
+            WriteIndented = true,
+            Converters = { new JsonStringEnumConverter() },
+        }));
+        Console.WriteLine($"Checkpoint report: {reportPath}");
+        return reportPath;
     }
 
     private static int RunSam2Checkpoint(CliOptions options)
