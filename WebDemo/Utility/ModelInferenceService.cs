@@ -194,9 +194,32 @@ public sealed class ModelInferenceService : IDisposable
     {
         _logger.LogInformation("Loading {Model} checkpoint {Checkpoint}", configuredModel.DisplayName, configuredModel.CheckpointPath);
         var model = new BuildSam3New().Build();
-        new Sam3CheckpointLoaderBinary().LoadModel(model, configuredModel.CheckpointPath, CPU);
+        if (ResolveSam3CheckpointFormat(configuredModel.CheckpointPath) == Sam3CheckpointFormat.OfficialSafetensors)
+        {
+            var report = new Sam3CheckpointLoaderNew().LoadModelWithReport(model, configuredModel.CheckpointPath, CPU);
+            if (!report.IsComplete)
+                throw new InvalidDataException(
+                    $"Incomplete {configuredModel.DisplayName} checkpoint load: " +
+                    $"missing={report.MissingKeys.Count}, shape_mismatch={report.ShapeMismatches.Count}.");
+        }
+        else
+        {
+            new Sam3CheckpointLoaderBinary().LoadModel(model, configuredModel.CheckpointPath, CPU);
+        }
         model.eval();
         return model;
+    }
+
+    internal static Sam3CheckpointFormat ResolveSam3CheckpointFormat(string checkpointPath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(checkpointPath);
+        return Path.GetExtension(checkpointPath).ToLowerInvariant() switch
+        {
+            ".safetensors" => Sam3CheckpointFormat.OfficialSafetensors,
+            ".bin" or ".pt" => Sam3CheckpointFormat.ConvertedBinary,
+            var extension => throw new NotSupportedException(
+                $"Unsupported SAM3 checkpoint extension '{extension}'. Use .safetensors or converted .bin."),
+        };
     }
 
     private PredictResponse MaskResponse(string model, Tensor image, Tensor masksBatch, Tensor scores)

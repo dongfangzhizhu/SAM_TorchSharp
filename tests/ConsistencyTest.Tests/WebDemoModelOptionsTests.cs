@@ -1,5 +1,7 @@
 using SAMTorchSharp.Modeling.Sam2;
+using SAMTorchSharp.Modeling.Sam3;
 using WebDemo.Models;
+using WebDemo.Utility;
 
 namespace ConsistencyTest.Tests;
 
@@ -81,6 +83,19 @@ public sealed class WebDemoModelOptionsTests : IDisposable
         Assert.Throws<ArgumentException>(() => ModelPathResolver.ParseSam2Model("sam2.1_hiera_tiny", false));
         Assert.Throws<ArgumentException>(() => ModelPathResolver.ParseSam2Model("sam2_hiera_tiny", true));
     }
+
+    [Theory]
+    [InlineData("model.safetensors", Sam3CheckpointFormat.OfficialSafetensors)]
+    [InlineData("MODEL.SAFETENSORS", Sam3CheckpointFormat.OfficialSafetensors)]
+    [InlineData("model.bin", Sam3CheckpointFormat.ConvertedBinary)]
+    [InlineData("model.pt", Sam3CheckpointFormat.ConvertedBinary)]
+    public void RoutesSam3CheckpointToMatchingLoader(string path, Sam3CheckpointFormat expected) =>
+        Assert.Equal(expected, ModelInferenceService.ResolveSam3CheckpointFormat(path));
+
+    [Fact]
+    public void RejectsUnsupportedSam3CheckpointExtension() =>
+        Assert.Throws<NotSupportedException>(() =>
+            ModelInferenceService.ResolveSam3CheckpointFormat("model.ckpt"));
 
     private static ModelDefinition Definition(string directory, string name) => new() { Directory = directory, Name = name };
 
