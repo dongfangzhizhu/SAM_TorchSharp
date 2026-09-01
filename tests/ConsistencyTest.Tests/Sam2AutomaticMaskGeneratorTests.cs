@@ -60,6 +60,23 @@ public sealed class Sam2AutomaticMaskGeneratorTests
     }
 
     [Fact]
+    public void SmallRegionPostprocessingFillsHolesAndRemovesIslands()
+    {
+        var mask = new bool[8, 8];
+        for (int y = 2; y <= 6; y++)
+        for (int x = 1; x <= 5; x++) mask[y, x] = true;
+        mask[4, 3] = false;
+        mask[0, 7] = true;
+
+        Assert.True(AMGUtiities.RemoveSmallRegions(mask, areaThreshold: 2, holes: true));
+        Assert.True(AMGUtiities.RemoveSmallRegions(mask, areaThreshold: 2, holes: false));
+
+        Assert.True(mask[4, 3]);
+        Assert.False(mask[0, 7]);
+        Assert.Equal(25, mask.Cast<bool>().Count(value => value));
+    }
+
+    [Fact]
     public void MaskDataFiltersRlesByNmsIndicesWithoutTreatingIndicesAsBooleans()
     {
         var data = new MaskData();

@@ -374,6 +374,79 @@ namespace SAMTorchSharp
             return mask;
         }
 
+        public static RleElement BinaryMaskToRle(bool[,] mask)
+        {
+            int height = mask.GetLength(0);
+            int width = mask.GetLength(1);
+            var counts = new List<int>();
+            bool previous = false;
+            int runLength = 0;
+            for (int x = 0; x < width; x++)
+            for (int y = 0; y < height; y++)
+            {
+                bool current = mask[y, x];
+                if (current == previous) runLength++;
+                else
+                {
+                    counts.Add(runLength);
+                    runLength = 1;
+                    previous = current;
+                }
+            }
+            counts.Add(runLength);
+            return new RleElement { Size = [height, width], Counts = counts.ToArray() };
+        }
+
+        /// <summary>Fill small holes or remove small islands using 8-neighbour connectivity.</summary>
+        public static bool RemoveSmallRegions(bool[,] mask, int areaThreshold, bool holes)
+        {
+            int height = mask.GetLength(0), width = mask.GetLength(1);
+            bool target = !holes;
+            var visited = new bool[height, width];
+            var regions = new List<List<(int Y, int X)>>();
+            for (int y = 0; y < height; y++)
+            for (int x = 0; x < width; x++)
+            {
+                if (visited[y, x] || mask[y, x] != target) continue;
+                var region = new List<(int, int)>();
+                var queue = new Queue<(int Y, int X)>();
+                queue.Enqueue((y, x));
+                visited[y, x] = true;
+                while (queue.Count > 0)
+                {
+                    var point = queue.Dequeue();
+                    region.Add(point);
+                    for (int dy = -1; dy <= 1; dy++)
+                    for (int dx = -1; dx <= 1; dx++)
+                    {
+                        int ny = point.Y + dy, nx = point.X + dx;
+                        if ((dy == 0 && dx == 0) || ny < 0 || nx < 0 || ny >= height || nx >= width ||
+                            visited[ny, nx] || mask[ny, nx] != target) continue;
+                        visited[ny, nx] = true;
+                        queue.Enqueue((ny, nx));
+                    }
+                }
+                regions.Add(region);
+            }
+
+            var small = regions.Where(region => region.Count < areaThreshold).ToList();
+            if (small.Count == 0) return false;
+            if (holes)
+            {
+                foreach (var region in small)
+                foreach (var point in region) mask[point.Y, point.X] = true;
+            }
+            else
+            {
+                var keep = regions.Where(region => region.Count >= areaThreshold).ToList();
+                if (keep.Count == 0 && regions.Count > 0) keep.Add(regions.MaxBy(region => region.Count)!);
+                var keepPoints = keep.SelectMany(region => region).ToHashSet();
+                for (int y = 0; y < height; y++)
+                for (int x = 0; x < width; x++) mask[y, x] = keepPoints.Contains((y, x));
+            }
+            return true;
+        }
+
         /// <summary>Build a 2D grid of points evenly spaced in [0,1]x[0,1].</summary>
         public static double[] BuildPointGrid(int nPerSide)
         {

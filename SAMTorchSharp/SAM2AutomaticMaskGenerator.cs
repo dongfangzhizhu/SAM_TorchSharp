@@ -136,7 +136,37 @@ namespace SAMTorchSharp
                 data.Filter(keep.to(ScalarType.Bool));
             }
 
+            if (_minMaskRegionArea > 0 && data.GetRles("rles").Count > 0)
+                _PostprocessSmallRegions(data, checked((int)_minMaskRegionArea));
+
             return data;
+        }
+
+        private void _PostprocessSmallRegions(MaskData data, int minArea)
+        {
+            var masks = new List<Tensor>();
+            var scores = new List<float>();
+            var updatedRles = new List<RleElement>();
+            foreach (var rle in data.GetRles("rles"))
+            {
+                var mask = AMGUtiities.RleToMask(rle);
+                bool changed = AMGUtiities.RemoveSmallRegions(mask, minArea, holes: true);
+                changed |= AMGUtiities.RemoveSmallRegions(mask, minArea, holes: false);
+                updatedRles.Add(AMGUtiities.BinaryMaskToRle(mask));
+                scores.Add(changed ? 0f : 1f);
+                masks.Add(tensor(mask.Cast<bool>().ToArray(), dtype: ScalarType.Bool)
+                    .reshape(mask.GetLength(0), mask.GetLength(1)));
+            }
+
+            using var maskTensor = stack(masks);
+            var boxes = AMGUtiities.BatchedMaskToBox(maskTensor);
+            data.Set("rles", updatedRles);
+            data.Set("boxes", boxes);
+            using var scoreTensor = tensor(scores.ToArray());
+            using var categories = zeros(scores.Count, dtype: ScalarType.Int64);
+            var keep = _BatchedNms(boxes.to(ScalarType.Float32), scoreTensor, categories, _boxNmsThresh);
+            data.Filter(keep);
+            foreach (var mask in masks) mask.Dispose();
         }
 
         private MaskData _ProcessCrop(Tensor image, int[] cropBox, int cropLayerIdx, int origSizeH, int origSizeW)
