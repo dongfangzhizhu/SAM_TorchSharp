@@ -48,8 +48,6 @@ public class Sam3GeometryEncoderLayer : Module
         self_attn_v_proj = Linear(d_model, d_model);
         self_attn_o_proj = Linear(d_model, d_model);
 
-        cross_attn_q_proj = Linear(d_model, d_model);
-        cross_attn_k_proj = Linear(d_model, d_model);
         cross_attn_v_proj = Linear(d_model, d_model);
         cross_attn_o_proj = Linear(d_model, d_model);
 
@@ -129,9 +127,12 @@ public class Sam3GeometryEncoderNew : Module
     private readonly Linear boxes_direct_project;
     private readonly Linear points_pos_enc_project;
     private readonly Linear boxes_pos_enc_project;
+    private readonly Linear points_pool_project;
+    private readonly Conv2d boxes_pool_project;
     private readonly Linear final_proj;
     private readonly LayerNorm final_norm;
     private readonly LayerNorm encode_norm;
+    private readonly LayerNorm vision_layer_norm;
     private readonly Sam3PositionEmbeddingSine position_encoding;
     private readonly int d_model;
     private readonly int num_geo_layers;
@@ -144,13 +145,18 @@ public class Sam3GeometryEncoderNew : Module
 
         label_embed = Embedding(2, d_model);
         cls_embed = Embedding(1, d_model);
+        points_pool_project = Linear(d_model, d_model);
         points_direct_project = Linear(2, d_model);
+        boxes_pool_project = Conv2d(d_model, d_model, kernelSize: 3);
+        points_pool_project = Linear(d_model, d_model);
         boxes_direct_project = Linear(4, d_model);
+        boxes_pool_project = Conv2d(d_model, d_model, kernelSize: 3);
         points_pos_enc_project = Linear(d_model, d_model);
         boxes_pos_enc_project = Linear(d_model + 2, d_model);
         final_proj = Linear(d_model, d_model);
         final_norm = LayerNorm(d_model);
         encode_norm = LayerNorm(d_model);
+        vision_layer_norm = LayerNorm(d_model);
         position_encoding = new Sam3PositionEmbeddingSine(num_pos_feats: d_model, normalize: true);
 
         layers = new List<Sam3GeometryEncoderLayer>();
@@ -161,6 +167,47 @@ public class Sam3GeometryEncoderNew : Module
         }
 
         RegisterComponents();
+    }
+
+    private static Tensor SamplePoints(Tensor image, Tensor points)
+    {
+        // image: [B,C,H,W], points: [N,B,2] in [0,1]. grid_sample with
+        // align_corners=false matches the bilinear sampler used by SAM3.
+        var grid = points.permute(1, 0, 2).unsqueeze(2) * 2 - 1;
+        return functional.grid_sample(image, grid, mode: GridSampleMode.Bilinear,
+            padding_mode: GridSamplePaddingMode.Zeros, align_corners: false)
+            .squeeze(3).permute(2, 0, 1);
+    }
+
+    private static Tensor RoiAlign(Tensor image, Tensor boxes, int outputSize)
+    {
+        // image: [B,C,H,W], boxes: [N,B,4] cx,cy,w,h normalized to [0,1].
+        // The grid uses one bin-center sample per output bin, equivalent to
+        // torchvision roi_align with sampling_ratio=1.
+        var b = image.size(0);
+        var c = image.size(1);
+        var h = image.size(2);
+        var w = image.size(3);
+        var n = boxes.size(0);
+        var x1 = (boxes.select(-1, 0) - boxes.select(-1, 2) / 2) * w;
+        var y1 = (boxes.select(-1, 1) - boxes.select(-1, 3) / 2) * h;
+        var x2 = (boxes.select(-1, 0) + boxes.select(-1, 2) / 2) * w;
+        var y2 = (boxes.select(-1, 1) + boxes.select(-1, 3) / 2) * h;
+        var rows = torch.arange(outputSize, dtype: ScalarType.Float32, device: image.device)
+            .view(1, 1, outputSize, 1);
+        var cols = torch.arange(outputSize, dtype: ScalarType.Float32, device: image.device)
+            .view(1, 1, 1, outputSize);
+        var gridX = (x1.unsqueeze(-1).unsqueeze(-1) + (cols + 0.5) *
+            (x2 - x1).unsqueeze(-1).unsqueeze(-1) / outputSize - 0.5) / w;
+        var gridY = (y1.unsqueeze(-1).unsqueeze(-1) + (rows + 0.5) *
+            (y2 - y1).unsqueeze(-1).unsqueeze(-1) / outputSize - 0.5) / h;
+        var grid = torch.stack(new[] { gridX.expand(n, b, outputSize, outputSize),
+            gridY.expand(n, b, outputSize, outputSize) }, dim: -1)
+            .permute(1, 0, 2, 3, 4).reshape(b, n * outputSize, outputSize, 2) * 2 - 1;
+        var sampled = functional.grid_sample(image, grid, mode: GridSampleMode.Bilinear,
+            padding_mode: GridSamplePaddingMode.Zeros, align_corners: false);
+        return sampled.view(b, c, n, outputSize, outputSize)
+            .permute(0, 2, 1, 3, 4).reshape(b * n, c, outputSize, outputSize);
     }
 
     public Tuple<Tensor, Tensor> forward(
@@ -177,6 +224,8 @@ public class Sam3GeometryEncoderNew : Module
 
         var allFeats = new List<Tensor>();
         var allMasks = new List<Tensor>();
+        var pooledImage = vision_layer_norm.forward(img_feats[^1].permute(0, 2, 3, 1))
+            .permute(0, 3, 1, 2);
 
         if (hasPoints)
         {
@@ -192,6 +241,7 @@ public class Sam3GeometryEncoderNew : Module
             var encoded = points_direct_project.forward(points)
                 + points_pos_enc_project.forward(pos)
                 + label_embed.forward(labels.to_type(ScalarType.Int64));
+            encoded = encoded + points_pool_project.forward(SamplePoints(pooledImage, points));
             allFeats.Add(encoded);
             allMasks.Add(geo_prompt.point_mask ?? zeros(new long[] { bs, points.size(0) }, dtype: ScalarType.Bool, device: device));
         }
@@ -214,6 +264,10 @@ public class Sam3GeometryEncoderNew : Module
             var encoded = boxes_direct_project.forward(boxes)
                 + boxes_pos_enc_project.forward(boxPos)
                 + label_embed.forward(labels.to_type(ScalarType.Int64));
+            var pooledBoxes = RoiAlign(pooledImage, boxes, 3);
+            var boxPool = boxes_pool_project.forward(pooledBoxes)
+                .view(bs, num_boxes, d_model).transpose(0, 1);
+            encoded = encoded + boxPool;
             allFeats.Add(encoded);
             allMasks.Add(geo_prompt.box_mask ?? zeros(new long[] { bs, num_boxes }, dtype: ScalarType.Bool, device: device));
         }
