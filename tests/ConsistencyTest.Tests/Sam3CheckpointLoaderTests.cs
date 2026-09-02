@@ -39,6 +39,8 @@ public sealed class Sam3CheckpointLoaderTests
     [InlineData("detector_model.geometry_encoder.prompt_layer_norm.bias", "geometry_encoder.final_norm.bias")]
     [InlineData("detector_model.geometry_encoder.vision_layer_norm.weight", "geometry_encoder.vision_layer_norm.weight")]
     [InlineData("detector_model.mask_decoder.mask_embedder.layers.1.weight", "mask_decoder.mask_embedder.layer_1.weight")]
+    [InlineData("detector_model.mask_decoder.semantic_projection.weight", "mask_decoder.semantic_projection.weight")]
+    [InlineData("detector_model.mask_decoder.instance_projection.bias", "mask_decoder.instance_projection.bias")]
     [InlineData("detector_model.dot_product_scoring.text_mlp.layer1.weight", "dot_product_scoring.text_mlp.0.weight")]
     [InlineData("detector_model.dot_product_scoring.text_mlp.layer2.bias", "dot_product_scoring.text_mlp.1.bias")]
     public void MapsRepresentativeOfficialKeys(string checkpointKey, string modelKey)
@@ -48,7 +50,6 @@ public sealed class Sam3CheckpointLoaderTests
 
     [Theory]
     [InlineData("tracker_model.memory_encoder.weight")]
-    [InlineData("detector_model.mask_decoder.semantic_projection.weight")]
     [InlineData("detector_model.unknown.weight")]
     public void ReturnsNullForUnsupportedOfficialKeys(string checkpointKey)
     {

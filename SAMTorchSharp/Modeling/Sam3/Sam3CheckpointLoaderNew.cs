@@ -250,10 +250,6 @@ public class Sam3CheckpointLoaderNew
             return MapGeometryEncoderKey(ckptKey);
         }
 
-        // Skip mask decoder projection layers (stored as 4D Conv2d weights or wrong-shape biases in checkpoint, not Linear)
-        if (ckptKey.Contains("mask_decoder.semantic_projection") || ckptKey.Contains("mask_decoder.instance_projection"))
-            return null;
-
         // Mask decoder
         if (ckptKey.StartsWith("mask_decoder."))
             return MapMaskDecoderKey(ckptKey);
