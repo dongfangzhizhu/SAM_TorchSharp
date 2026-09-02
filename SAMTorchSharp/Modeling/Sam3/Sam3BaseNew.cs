@@ -161,12 +161,16 @@ public class Sam3BaseNew : Module
             var promptList = new List<Tensor> { langFeat, geoFeatsTensor };
             prompt = cat(promptList.ToArray(), dim: 0);
 
-            var geoMaskBatched = geoMaskTensor.unsqueeze(0); // [1, 1, seq_geo]
-            promptMask = torch.cat(new[] { langMask.unsqueeze(0), geoMaskBatched }, dim: 2);
+            if (langFeat.size(1) != geoFeatsTensor.size(1))
+                throw new ArgumentException("Caption and image batch sizes must match.", nameof(captions));
+
+            // Both prompt sources use sequence-first features and batch-first masks.
+            promptMask = torch.cat(new[] { langMask, geoMaskTensor }, dim: 1);
         }
         else
         {
-            prompt = geoFeatsTensor.unsqueeze(1); // [seq_len, 1, d_model]
+            // Geometry encoder already returns [sequence, batch, channels].
+            prompt = geoFeatsTensor;
             promptMask = geoMaskTensor;
         }
 
@@ -240,12 +244,14 @@ public class Sam3BaseNew : Module
         {
             var promptList = new List<Tensor> { langFeat, geoFeatsTensor };
             prompt = cat(promptList.ToArray(), dim: 0);
-            var geoMaskBatched = geoMaskTensor.unsqueeze(0);
-            promptMask = torch.cat(new[] { langMask.unsqueeze(0), geoMaskBatched }, dim: 2);
+            if (langFeat.size(1) != geoFeatsTensor.size(1))
+                throw new ArgumentException("Caption and image batch sizes must match.", nameof(captions));
+
+            promptMask = torch.cat(new[] { langMask, geoMaskTensor }, dim: 1);
         }
         else
         {
-            prompt = geoFeatsTensor.unsqueeze(1);
+            prompt = geoFeatsTensor;
             promptMask = geoMaskTensor;
         }
 

@@ -236,6 +236,21 @@ public sealed class Sam3SegmentationHeadTests
     }
 
     [Fact]
+    public void EmptyGeometryPromptPreservesImageBatchContract()
+    {
+        using var encoder = new Sam3GeometryEncoderNew(d_model: 8, num_geo_layers: 0);
+        using var feature = zeros(3, 8, 2, 2);
+
+        var (tokens, mask) = encoder.forward(new Sam3Prompt(), [feature], [[2L, 2L]]);
+        using (tokens)
+        using (mask)
+        {
+            Assert.Equal([1L, 3L, 8L], tokens.shape);
+            Assert.Equal([3L, 1L], mask.shape);
+        }
+    }
+
+    [Fact]
     public void ProducesPerQueryMaskLogitsAtHighestFpnResolution()
     {
         manual_seed(17);
