@@ -146,6 +146,31 @@ public sealed class Sam3SegmentationHeadTests
     }
 
     [Fact]
+    public void GeometryEncoderPreservesPointAndBoxPaddingMasks()
+    {
+        using var encoder = new Sam3GeometryEncoderNew(d_model: 8, num_geo_layers: 0);
+        using var points = zeros(2, 1, 2);
+        using var boxes = zeros(1, 1, 4);
+        using var pointMask = tensor(new bool[,] { { false, true } });
+        using var boxMask = tensor(new bool[,] { { true } });
+        using var feature = zeros(1, 8, 2, 2);
+        var prompt = new Sam3Prompt(
+            point_embeddings: points, point_mask: pointMask,
+            box_embeddings: boxes, box_mask: boxMask);
+
+        var (tokens, mask) = encoder.forward(prompt, [feature], [[2L, 2L]]);
+        using (tokens)
+        using (mask)
+        {
+            Assert.Equal([3L, 1L, 8L], tokens.shape);
+            Assert.Equal([1L, 3L], mask.shape);
+            Assert.True(mask[0, 0].item<bool>() == false);
+            Assert.True(mask[0, 1].item<bool>());
+            Assert.True(mask[0, 2].item<bool>());
+        }
+    }
+
+    [Fact]
     public void GeometryEncoderRejectsBatchFirstPromptShape()
     {
         using var encoder = new Sam3GeometryEncoderNew(d_model: 8, num_geo_layers: 0);

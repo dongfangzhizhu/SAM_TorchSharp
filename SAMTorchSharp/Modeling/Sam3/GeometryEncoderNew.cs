@@ -222,6 +222,7 @@ public class Sam3GeometryEncoderNew : Module
         if (allFeats.Count == 0)
         {
             geoCombined = cls_embed.weight.view(1, 1, d_model).repeat(1, bs, 1).to(device);
+            allMasks.Add(zeros(new long[] { bs, 1 }, dtype: ScalarType.Bool, device: device));
         }
         else if (allFeats.Count == 1)
         {
@@ -233,7 +234,11 @@ public class Sam3GeometryEncoderNew : Module
         }
 
         var finalSeqLen = geoCombined.size(0);
-        var geoMask = zeros(new long[] { bs, finalSeqLen }, dtype: ScalarType.Bool, device: device);
+        var geoMask = allMasks.Count == 1
+            ? allMasks[0]
+            : cat(allMasks.ToArray(), dim: 1);
+        if (geoMask.size(1) != finalSeqLen)
+            throw new InvalidOperationException("Geometry prompt masks do not match the encoded sequence length.");
 
         // Match SequenceGeometryEncoder: post projection/norm followed by the
         // pre-norm self/cross-attention encoder stack and final norm.
