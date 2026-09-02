@@ -108,4 +108,55 @@ public sealed class Sam3ImageCommandTests
         var nonFinite = Assert.Throws<InvalidOperationException>(() => Sam3ImageCommand.ValidateOutputs(outputs));
         Assert.Contains("non-finite", nonFinite.Message);
     }
+
+    [Fact]
+    public void PostProcessesSam3InstancesInScoreOrder()
+    {
+        using var boxes = tensor(new float[,,] { { { 0.5f, 0.5f, 0.4f, 0.2f }, { 0.2f, 0.3f, 0.2f, 0.2f }, { 0.8f, 0.8f, 0.1f, 0.1f } } });
+        using var logits = tensor(new float[,,] { { { 2f }, { -2f }, { 1f } } });
+        using var masks = tensor(new float[,,,]
+        {
+            { { { 10f, 10f }, { -10f, -10f } }, { { -10f, -10f }, { -10f, -10f } }, { { -10f, 10f }, { -10f, 10f } } }
+        });
+        using var semantic = zeros(1, 1, 2, 2);
+        var outputs = new Dictionary<string, TorchSharp.torch.Tensor>
+        {
+            ["pred_boxes"] = boxes,
+            ["pred_logits"] = logits,
+            ["pred_masks"] = masks,
+            ["semantic_seg"] = semantic,
+        };
+
+        using var result = Sam3ImageCommand.PostProcess(outputs, imageHeight: 20, imageWidth: 100);
+
+        Assert.Equal([2L, 4L], result.Boxes.shape);
+        Assert.Equal([2L], result.Scores.shape);
+        Assert.Equal([2L, 20L, 100L], result.Masks.shape);
+        Assert.True(result.Scores[0].item<float>() > result.Scores[1].item<float>());
+        Assert.Equal(30f, result.Boxes[0, 0].item<float>(), precision: 3);
+        Assert.Equal(8f, result.Boxes[0, 1].item<float>(), precision: 3);
+        Assert.True(result.Masks.any().item<bool>());
+    }
+
+    [Fact]
+    public void PostProcessReturnsEmptyInstanceArrays()
+    {
+        using var boxes = zeros(1, 2, 4);
+        using var logits = full([1, 2, 1], -10f);
+        using var masks = zeros(1, 2, 2, 2);
+        using var semantic = zeros(1, 1, 2, 2);
+        var outputs = new Dictionary<string, TorchSharp.torch.Tensor>
+        {
+            ["pred_boxes"] = boxes,
+            ["pred_logits"] = logits,
+            ["pred_masks"] = masks,
+            ["semantic_seg"] = semantic,
+        };
+
+        using var result = Sam3ImageCommand.PostProcess(outputs, 12, 16);
+
+        Assert.Equal([0L, 4L], result.Boxes.shape);
+        Assert.Equal([0L], result.Scores.shape);
+        Assert.Equal([0L, 12L, 16L], result.Masks.shape);
+    }
 }

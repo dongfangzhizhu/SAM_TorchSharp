@@ -87,10 +87,14 @@ internal static class Program
         var deviceName = (options.Get("device") ?? "cpu").ToLowerInvariant();
         var seed = options.GetInt("seed", 42);
         var minCoverage = options.GetDouble("min-coverage", 0, min: 0, max: 100);
+        var confidenceThreshold = options.GetDouble("confidence-threshold", 0.5, min: 0, max: 1);
+        var maxDetections = options.GetInt("max-detections", 20);
         options.EnsureNoUnused();
 
         if (deviceName != "cpu")
             throw new CliException("Only --device cpu is supported by the configured libtorch-cpu-win-x64 runtime.");
+        if (maxDetections <= 0)
+            throw new CliException("Option '--max-detections' must be greater than zero.");
 
         var checkpointFormat = GetSam3CheckpointFormat(checkpointPath);
         var geometryInputs = Sam3ImageCommand.LoadGeometryInputs(pointsPath, labelsPath, boxPath);
@@ -144,6 +148,24 @@ internal static class Program
                 Console.WriteLine($"{name}: [{string.Join(", ", tensor.shape)}] -> {outputPath}");
             }
 
+            using var processed = Sam3ImageCommand.PostProcess(
+                outputs,
+                Sam3ImageCommand.ModelInputSize,
+                Sam3ImageCommand.ModelInputSize,
+                (float)confidenceThreshold,
+                maxDetections);
+            NpyFile.WriteFloat32(Path.Combine(outputDirectory, "instance_boxes.npy"), processed.Boxes);
+            NpyFile.WriteFloat32(Path.Combine(outputDirectory, "instance_scores.npy"), processed.Scores);
+            NpyFile.WriteFloat32(Path.Combine(outputDirectory, "instance_masks.npy"), processed.Masks);
+            var detections = Enumerable.Range(0, checked((int)processed.Scores.size(0))).Select(index => new
+            {
+                score = processed.Scores[index].item<float>(),
+                box = Enumerable.Range(0, 4).Select(coordinate => processed.Boxes[index, coordinate].item<float>()).ToArray(),
+            });
+            File.WriteAllText(
+                Path.Combine(outputDirectory, "detections.json"),
+                JsonSerializer.Serialize(detections, new JsonSerializerOptions { WriteIndented = true }));
+
             var summary = new
             {
                 checkpoint = checkpointPath,
@@ -158,6 +180,9 @@ internal static class Program
                 skipped,
                 missing,
                 coverage,
+                confidenceThreshold,
+                maxDetections,
+                detectionCount = processed.Scores.size(0),
                 inferenceMilliseconds = stopwatch.ElapsedMilliseconds,
                 outputs = outputs.ToDictionary(pair => pair.Key, pair => pair.Value.shape),
             };

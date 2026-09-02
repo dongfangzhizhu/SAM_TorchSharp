@@ -116,6 +116,8 @@ dotnet run --project .\ConsistencyTest.csproj -- sam3-run `
   --caption "a dog" `
   --device cpu `
   --seed 42 `
+  --confidence-threshold 0.5 `
+  --max-detections 20 `
   --min-coverage 75
 ```
 
@@ -128,9 +130,12 @@ accepts optional point and box geometry prompts in model-input pixels. `points.n
 shape `[4]` in `x0,y0,x1,y1` order. Coordinates must lie within the `1008x1008` model input. The command
 writes `checkpoint-report.json` before coverage validation or inference. The report contains the
 loaded, missing, skipped, and shape-mismatched keys plus the loadable-tensor coverage. Successful
-inference also writes normalized `pred_boxes.npy` and `pred_logits.npy`. The underlying model
-forward result contains per-query mask logits; the WebDemo resizes, thresholds, and visualizes
-those masks at the original image size.
+inference writes the raw normalized `pred_boxes.npy`, `pred_logits.npy`, `pred_masks.npy`, and
+`semantic_seg.npy` tensors. It also filters and sorts instances using `--confidence-threshold` and
+`--max-detections`, then writes pixel-space `instance_boxes.npy`, sigmoid scores in
+`instance_scores.npy`, resized binary `instance_masks.npy`, and a JSON-friendly `detections.json`.
+Since the CLI input is already a `1008x1008` preprocessed tensor, these processed outputs use that
+model-input resolution.
 Before writing outputs, the CLI validates that boxes, scores, instance masks, and semantic masks
 have matching shapes and contain only finite values; a NaN or infinity makes the command fail.
 
