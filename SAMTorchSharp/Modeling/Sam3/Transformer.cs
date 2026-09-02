@@ -111,7 +111,7 @@ public class Sam3TransformerEncoderLayer : Module
         RegisterComponents();
     }
 
-    private Tensor dot_product_attention(Tensor q, Tensor k, Tensor v)
+    private Tensor dot_product_attention(Tensor q, Tensor k, Tensor v, Tensor? key_padding_mask = null)
     {
         // q, k, v: [seq, batch, d_model]
         var querySeq = q.size(0);
@@ -127,6 +127,14 @@ public class Sam3TransformerEncoderLayer : Module
 
         var k_h_t = k_h.transpose(2, 3);
         var attn = (q_h * attn_scale).matmul(k_h_t);
+        if (key_padding_mask is not null)
+        {
+            if (key_padding_mask.dim() != 2 || key_padding_mask.size(0) != B ||
+                key_padding_mask.size(1) != memorySeq)
+                throw new ArgumentException("Key padding mask must have shape [batch, memory sequence].");
+            var maskBias = key_padding_mask.to_type(attn.dtype).unsqueeze(1).unsqueeze(1) * -1.0e9f;
+            attn = attn + maskBias;
+        }
         attn = functional.softmax(attn, dim: -1);
         var attn_out = attn.matmul(v_h);
 
@@ -166,7 +174,7 @@ public class Sam3TransformerEncoderLayer : Module
         var k_s = self_attn_k_proj.forward(k_tgt);
         var v_s = self_attn_v_proj.forward(v_tgt);
 
-        var self_out = self_attn_o_proj.forward(dot_product_attention(q_s, k_s, v_s));
+        var self_out = self_attn_o_proj.forward(dot_product_attention(q_s, k_s, v_s, tgt_key_padding_mask));
 
         var tgt2 = tgt + self_out;
         tgt2 = norm1.forward(tgt2);
@@ -180,7 +188,7 @@ public class Sam3TransformerEncoderLayer : Module
         var k_c = cross_attn_k_proj.forward(k_cross);
         var v_c = cross_attn_v_proj.forward(v_cross);
 
-        var cross_out = cross_attn_o_proj.forward(dot_product_attention(q_c, k_c, v_c));
+        var cross_out = cross_attn_o_proj.forward(dot_product_attention(q_c, k_c, v_c, memory_key_padding_mask));
 
         var tgt3 = tgt2 + cross_out;
         tgt3 = norm2.forward(tgt3);

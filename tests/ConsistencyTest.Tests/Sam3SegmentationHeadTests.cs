@@ -188,6 +188,23 @@ public sealed class Sam3SegmentationHeadTests
     }
 
     [Fact]
+    public void DetrEncoderIgnoresPaddedPromptValues()
+    {
+        manual_seed(59);
+        using var encoder = new Sam3TransformerEncoder(
+            d_model: 8, nhead: 2, num_layers: 1, dim_feedforward: 16, num_feature_levels: 1);
+        using var image = randn(1, 8, 1, 2);
+        using var imagePos = zeros(1, 8, 1, 2);
+        using var promptA = cat([randn(1, 1, 8), zeros(2, 1, 8)], dim: 0);
+        using var promptB = cat([promptA.narrow(0, 0, 1), full([2, 1, 8], 1000f)], dim: 0);
+        using var promptMask = tensor(new bool[,] { { false, true, true } });
+
+        using var memoryA = (Tensor)encoder.forward([image], null, [imagePos], promptA, promptMask)["memory"];
+        using var memoryB = (Tensor)encoder.forward([image], null, [imagePos], promptB, promptMask)["memory"];
+        Assert.True(allclose(memoryA, memoryB, rtol: 1e-5, atol: 1e-6));
+    }
+
+    [Fact]
     public void GeometryEncoderRejectsBatchFirstPromptShape()
     {
         using var encoder = new Sam3GeometryEncoderNew(d_model: 8, num_geo_layers: 0);
