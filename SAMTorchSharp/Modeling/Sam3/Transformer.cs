@@ -114,19 +114,23 @@ public class Sam3TransformerEncoderLayer : Module
     private Tensor dot_product_attention(Tensor q, Tensor k, Tensor v)
     {
         // q, k, v: [seq, batch, d_model]
-        var seq = q.size(0);
+        var querySeq = q.size(0);
+        var memorySeq = k.size(0);
         var B = q.size(1);
 
-        var q_h = q.reshape(new long[] { seq, B, nhead, head_dim }).transpose(0, 1);
-        var k_h = k.reshape(new long[] { seq, B, nhead, head_dim }).transpose(0, 1);
-        var v_h = v.reshape(new long[] { seq, B, nhead, head_dim }).transpose(0, 1);
+        if (k.size(1) != B || v.size(1) != B || v.size(0) != memorySeq)
+            throw new ArgumentException("Attention tensors must have matching batch and memory dimensions.");
+
+        var q_h = q.reshape(new long[] { querySeq, B, nhead, head_dim }).permute(1, 2, 0, 3);
+        var k_h = k.reshape(new long[] { memorySeq, B, nhead, head_dim }).permute(1, 2, 0, 3);
+        var v_h = v.reshape(new long[] { memorySeq, B, nhead, head_dim }).permute(1, 2, 0, 3);
 
         var k_h_t = k_h.transpose(2, 3);
         var attn = (q_h * attn_scale).matmul(k_h_t);
-        attn = functional.softmax(attn, dim: 3);
+        attn = functional.softmax(attn, dim: -1);
         var attn_out = attn.matmul(v_h);
 
-        attn_out = attn_out.transpose(0, 1).reshape(new long[] { seq, B, d_model });
+        attn_out = attn_out.permute(2, 0, 1, 3).reshape(new long[] { querySeq, B, d_model });
         return attn_out;
     }
 
@@ -154,7 +158,7 @@ public class Sam3TransformerEncoderLayer : Module
         Tensor? memory_mask)
     {
         // Self-attention
-        var q_tgt = WithPosEmbed(tgt, pos);
+        var q_tgt = WithPosEmbed(tgt, query_pos);
         var k_tgt = WithPosEmbed(tgt, query_pos);
         var v_tgt = tgt;
 
@@ -165,11 +169,11 @@ public class Sam3TransformerEncoderLayer : Module
         var self_out = self_attn_o_proj.forward(dot_product_attention(q_s, k_s, v_s));
 
         var tgt2 = tgt + self_out;
-        tgt2 = norm2.forward(tgt2);
+        tgt2 = norm1.forward(tgt2);
 
         // Cross-attention (memory)
-        var q_cross = WithPosEmbed(tgt2, pos);
-        var k_cross = memory;
+        var q_cross = tgt2;
+        var k_cross = WithPosEmbed(memory, pos);
         var v_cross = memory;
 
         var q_c = cross_attn_q_proj.forward(q_cross);
@@ -179,7 +183,7 @@ public class Sam3TransformerEncoderLayer : Module
         var cross_out = cross_attn_o_proj.forward(dot_product_attention(q_c, k_c, v_c));
 
         var tgt3 = tgt2 + cross_out;
-        tgt3 = norm1.forward(tgt3);
+        tgt3 = norm2.forward(tgt3);
 
         // FFN
         var ffn = linear2.forward(activation.forward(linear1.forward(tgt3)));
@@ -239,7 +243,9 @@ public class Sam3TransformerEncoder : Module
     public Dictionary<string, object> forward(
         IList<Tensor> src,
         IList<Tensor>? src_key_padding_masks,
-        IList<Tensor>? pos)
+        IList<Tensor>? pos,
+        Tensor? prompt = null,
+        Tensor? prompt_key_padding_mask = null)
     {
         var srcList = src as List<Tensor> ?? src.ToList();
         var srcFlatten = new List<Tensor>();
@@ -284,9 +290,12 @@ public class Sam3TransformerEncoder : Module
         // Transpose to seq-first format [total_spatial, bs, d_model] for decoder compatibility
         Tensor output = srcConcat.transpose(0, 1);
         lvlPosConcat = lvlPosConcat.transpose(0, 1);
+        var imageMask = hasMask ? cat(maskFlatten.Where(m => m is not null).Select(m => m!).ToArray(), dim: 1) : null;
+        var crossMemory = prompt ?? output;
         foreach (var layer in layers)
         {
-            var result = layer.forward(output, output);
+            var result = layer.forward(output, crossMemory,
+                imageMask, prompt_key_padding_mask, pos: null, query_pos: lvlPosConcat);
             output = (Tensor)result["output"];
         }
 

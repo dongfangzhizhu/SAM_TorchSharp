@@ -171,6 +171,23 @@ public sealed class Sam3SegmentationHeadTests
     }
 
     [Fact]
+    public void DetrEncoderFusesSequenceFirstImageAndPromptWithDifferentLengths()
+    {
+        manual_seed(53);
+        using var encoder = new Sam3TransformerEncoder(
+            d_model: 8, nhead: 2, num_layers: 1, dim_feedforward: 16, num_feature_levels: 1);
+        using var image = randn(2, 8, 2, 2);
+        using var imagePos = randn(2, 8, 2, 2);
+        using var prompt = randn(3, 2, 8);
+        using var promptMask = zeros(2, 3, dtype: ScalarType.Bool);
+
+        var output = encoder.forward([image], null, [imagePos], prompt, promptMask);
+        using var memory = (Tensor)output["memory"];
+        Assert.Equal([4L, 2L, 8L], memory.shape);
+        Assert.True(isfinite(memory).all().item<bool>());
+    }
+
+    [Fact]
     public void GeometryEncoderRejectsBatchFirstPromptShape()
     {
         using var encoder = new Sam3GeometryEncoderNew(d_model: 8, num_geo_layers: 0);

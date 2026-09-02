@@ -174,7 +174,9 @@ public class Sam3BaseNew : Module
         var encoderMemory = transformer_encoder.forward(
             imgFeats,
             null, // padding masks
-            imgPosEmbeds);
+            imgPosEmbeds,
+            prompt,
+            promptMask);
 
         var memTensor = (Tensor)encoderMemory["memory"];
         var posEmbed = (Tensor)encoderMemory["pos_embed"];
@@ -248,7 +250,8 @@ public class Sam3BaseNew : Module
         }
 
         // 4. Run transformer encoder
-        var encoderMemory = transformer_encoder.forward(detectorFeatures, null, detectorPositions);
+        var encoderMemory = transformer_encoder.forward(
+            detectorFeatures, null, detectorPositions, prompt, promptMask);
         var memTensor = (Tensor)encoderMemory["memory"];
         var posEmbed = (Tensor)encoderMemory["pos_embed"];
 
