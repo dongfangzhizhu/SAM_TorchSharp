@@ -220,6 +220,14 @@ public class Sam3CheckpointLoaderNew
         // DETR decoder presence_head (3-layer MLP: 256->256->256->1)
         if (ckptKey.StartsWith("detr_decoder.presence_head."))
             return MapPresenceHeadKey(ckptKey);
+        if (ckptKey.StartsWith("detr_decoder.presence_token_head.layers."))
+        {
+            var parts = ckptKey.Substring("detr_decoder.presence_token_head.layers.".Length).Split('.');
+            if (parts.Length == 2 && int.TryParse(parts[0], out var layerIndex) && layerIndex is >= 0 and < 3 &&
+                parts[1] is "weight" or "bias")
+                return $"transformer_decoder.presence_head.{layerIndex}.{parts[1]}";
+            return null;
+        }
 
         // DETR decoder box_rpb_embed_x/y (RoPE position embedding)
         if (ckptKey.Contains("detr_decoder.box_rpb_embed_x.") || ckptKey.Contains("detr_decoder.box_rpb_embed_y."))
@@ -241,6 +249,10 @@ public class Sam3CheckpointLoaderNew
         if (ckptKey == "detr_decoder.presence_layer_norm.weight")
             return "transformer_decoder.presence_layer_norm.weight";
         if (ckptKey == "detr_decoder.presence_layer_norm.bias")
+            return "transformer_decoder.presence_layer_norm.bias";
+        if (ckptKey == "detr_decoder.presence_token_out_norm.weight")
+            return "transformer_decoder.presence_layer_norm.weight";
+        if (ckptKey == "detr_decoder.presence_token_out_norm.bias")
             return "transformer_decoder.presence_layer_norm.bias";
 
         // Geometry encoder
