@@ -145,18 +145,15 @@ public class Sam3GeometryEncoderNew : Module
 
         label_embed = Embedding(2, d_model);
         cls_embed = Embedding(1, d_model);
-        points_pool_project = Linear(d_model, d_model);
         points_direct_project = Linear(2, d_model);
-        boxes_pool_project = Conv2d(d_model, d_model, kernelSize: 7);
         points_pool_project = Linear(d_model, d_model);
         boxes_direct_project = Linear(4, d_model);
-        boxes_pool_project = Conv2d(d_model, d_model, kernelSize: 3);
+        boxes_pool_project = Conv2d(d_model, d_model, kernelSize: 7);
         points_pos_enc_project = Linear(d_model, d_model);
         boxes_pos_enc_project = Linear(d_model + 2, d_model);
         final_proj = Linear(d_model, d_model);
         final_norm = LayerNorm(d_model);
         encode_norm = LayerNorm(d_model);
-        vision_layer_norm = LayerNorm(d_model);
         position_encoding = new Sam3PositionEmbeddingSine(num_pos_feats: d_model, normalize: true);
 
         layers = new List<Sam3GeometryEncoderLayer>();

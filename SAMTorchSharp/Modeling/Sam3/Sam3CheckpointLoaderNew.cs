@@ -247,12 +247,6 @@ public class Sam3CheckpointLoaderNew
         if (ckptKey.StartsWith("geometry_encoder."))
         {
             var rest = ckptKey.Substring("geometry_encoder.".Length);
-            // Skip geometry encoder modules not implemented in simplified C# version
-            if (rest.StartsWith("boxes_pool_project.") ||
-                rest.StartsWith("output_layer_norm.") ||
-                rest.StartsWith("prompt_layer_norm.") ||
-                rest.StartsWith("vision_layer_norm."))
-                return null;
             return MapGeometryEncoderKey(ckptKey);
         }
 
@@ -597,13 +591,13 @@ public class Sam3CheckpointLoaderNew
         if (rest == "boxes_pos_enc_project.bias")
             return "geometry_encoder.boxes_pos_enc_project.bias";
         if (rest == "output_layer_norm.weight")
-            return "geometry_encoder.output_layer_norm.weight";
+            return "geometry_encoder.encode_norm.weight";
         if (rest == "output_layer_norm.bias")
-            return "geometry_encoder.output_layer_norm.bias";
+            return "geometry_encoder.encode_norm.bias";
         if (rest == "prompt_layer_norm.weight")
-            return "geometry_encoder.prompt_layer_norm.weight";
+            return "geometry_encoder.final_norm.weight";
         if (rest == "prompt_layer_norm.bias")
-            return "geometry_encoder.prompt_layer_norm.bias";
+            return "geometry_encoder.final_norm.bias";
         if (rest == "vision_layer_norm.weight")
             return "geometry_encoder.vision_layer_norm.weight";
         if (rest == "vision_layer_norm.bias")
