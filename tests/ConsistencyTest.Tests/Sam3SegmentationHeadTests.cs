@@ -6,6 +6,38 @@ namespace ConsistencyTest.Tests;
 public sealed class Sam3SegmentationHeadTests
 {
     [Fact]
+    public void SinePositionEncodingInterleavesOfficialSinCosFrequencies()
+    {
+        using var encoding = new Sam3PositionEmbeddingSine(num_pos_feats: 8);
+        using var x = zeros(1);
+        using var y = zeros(1);
+        var (encodedX, encodedY) = encoding.EncodeXY(x, y);
+        using (encodedX)
+        using (encodedY)
+        using (var expected = tensor(new float[,] { { 0f, 1f, 0f, 1f } }))
+        {
+            Assert.Equal([1L, 4L], encodedX.shape);
+            Assert.True(allclose(encodedX, expected));
+            Assert.True(allclose(encodedY, expected));
+        }
+    }
+
+    [Fact]
+    public void SinePositionEncodingAppendsBoxHeightThenWidth()
+    {
+        using var encoding = new Sam3PositionEmbeddingSine(num_pos_feats: 8);
+        using var x = zeros(1);
+        using var y = zeros(1);
+        using var width = tensor(new[] { 0.25f });
+        using var height = tensor(new[] { 0.75f });
+        using var encoded = encoding.EncodeBoxes(x, y, width, height);
+
+        Assert.Equal([1L, 10L], encoded.shape);
+        Assert.Equal(0.75f, encoded[0, 8].item<float>(), precision: 6);
+        Assert.Equal(0.25f, encoded[0, 9].item<float>(), precision: 6);
+    }
+
+    [Fact]
     public void VisionAttentionDelegatesScalingToSdpa()
     {
         var source = File.ReadAllText(FindRepositoryFile("SAMTorchSharp", "Modeling", "Sam3", "VitBackbone.cs"));
