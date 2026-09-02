@@ -84,6 +84,32 @@ public sealed class Sam3SegmentationHeadTests
     }
 
     [Fact]
+    public void DecoderCarriesPresenceTokenThroughAllLayers()
+    {
+        manual_seed(43);
+        using var decoder = new Sam3TransformerDecoderNew(
+            num_layers: 2, num_queries: 3, d_model: 8, nhead: 2, dim_feedforward: 16);
+        using var queries = randn(3, 2, 8);
+        using var memory = randn(5, 2, 8);
+        using var position = randn(5, 2, 8);
+        using var prompt = randn(2, 2, 8);
+        using var promptMask = zeros(2, 2, dtype: ScalarType.Bool);
+
+        var (hidden, boxes, presence) = decoder.forward(
+            queries, memory, prompt, promptMask, position);
+        Assert.NotNull(presence);
+        using (hidden)
+        using (boxes)
+        using (presence)
+        {
+            Assert.Equal([2L, 3L, 2L, 8L], hidden.shape);
+            Assert.Equal([2L, 3L, 2L, 4L], boxes.shape);
+            Assert.Equal([2L, 1L, 2L], presence.shape);
+            Assert.True(isfinite(presence).all().item<bool>());
+        }
+    }
+
+    [Fact]
     public void GeometryEncoderRunsPostProjectionAndTransformerStack()
     {
         manual_seed(41);
