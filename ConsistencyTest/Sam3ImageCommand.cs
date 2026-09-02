@@ -141,6 +141,9 @@ internal static class Sam3ImageCommand
         }
 
         var queryCount = outputs["pred_boxes"].size(1);
+        if (outputs.TryGetValue("presence_logit_dec", out var presence) &&
+            (presence.shape is not [1, 1] || !presence.isfinite().all().item<bool>()))
+            throw new InvalidOperationException("SAM 3 presence_logit_dec must have shape [1,1] and contain finite values.");
         if (outputs["pred_boxes"].shape is not [1, _, 4] ||
             outputs["pred_logits"].shape is not [1, _, 1] ||
             outputs["pred_masks"].size(0) != 1 ||
@@ -166,7 +169,13 @@ internal static class Sam3ImageCommand
             throw new ArgumentOutOfRangeException(nameof(maxDetections));
 
         using var scores = outputs["pred_logits"].squeeze(0).squeeze(-1).sigmoid();
-        using var candidates = scores.ge(confidenceThreshold).nonzero().flatten();
+        using var presence = outputs.TryGetValue("presence_logit_dec", out var presenceLogit)
+            ? presenceLogit.squeeze(-1).sigmoid()
+            : ones([1], dtype: ScalarType.Float32, device: scores.device);
+        if (presence.numel() != 1)
+            throw new ArgumentException("SAM 3 presence_logit_dec must contain one value for the image batch.");
+        using var combinedScores = scores * presence;
+        using var candidates = combinedScores.ge(confidenceThreshold).nonzero().flatten();
         if (candidates.numel() == 0)
         {
             return new Sam3InferenceResult(
@@ -175,13 +184,13 @@ internal static class Sam3ImageCommand
                 zeros([0, imageHeight, imageWidth], dtype: ScalarType.Float32, device: CPU));
         }
 
-        using var candidateScores = scores.index_select(0, candidates);
+        using var candidateScores = combinedScores.index_select(0, candidates);
         var count = Math.Min(maxDetections, checked((int)candidates.numel()));
         var (topValues, topIndices) = candidateScores.topk(count);
         using (topValues)
         using (topIndices)
         using (var indices = candidates.index_select(0, topIndices))
-        using (var selectedScores = scores.index_select(0, indices))
+        using (var selectedScores = combinedScores.index_select(0, indices))
         using (var selectedBoxes = outputs["pred_boxes"].squeeze(0).index_select(0, indices))
         using (var cx = selectedBoxes.select(1, 0))
         using (var cy = selectedBoxes.select(1, 1))

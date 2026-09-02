@@ -307,6 +307,7 @@ public class Sam3BaseNew : Module
             tgt, memory, prompt, prompt_mask, pos_embed, spatialShapes);
         var hs = decoderResult.Item1;  // [num_layers, nq, bs, d_model]
         var reference_boxes = decoderResult.Item2;  // [num_layers, nq, bs, 4]
+        var presenceLogits = decoderResult.Item3;
 
         var result_dict = new Dictionary<string, Tensor>();
 
@@ -320,6 +321,10 @@ public class Sam3BaseNew : Module
         // Take last layer scores -> [bs, nq, 1]
         var scoresLast = scores.narrow(0, (long)scores.size(0) - 1, 1).squeeze(0);  // [bs, nq, 1]
         result_dict.Add("pred_logits", scoresLast);
+        if (presenceLogits is not null)
+        {
+            result_dict["presence_logit_dec"] = presenceLogits.narrow(0, presenceLogits.size(0) - 1, 1).squeeze(0);
+        }
 
         // reference_boxes: [num_layers, nq, bs, 4] -> take last layer -> [bs, nq, 4]
         var lastRef = reference_boxes.narrow(0, (long)reference_boxes.size(0) - 1, 1).squeeze(0);  // [nq, bs, 4]

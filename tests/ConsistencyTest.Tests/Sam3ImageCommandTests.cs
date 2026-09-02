@@ -159,4 +159,26 @@ public sealed class Sam3ImageCommandTests
         Assert.Equal([0L], result.Scores.shape);
         Assert.Equal([0L, 12L, 16L], result.Masks.shape);
     }
+
+    [Fact]
+    public void PostProcessAppliesPresenceProbabilityToScores()
+    {
+        using var boxes = zeros(1, 1, 4);
+        using var logits = full([1, 1, 1], 2f);
+        using var masks = zeros(1, 1, 2, 2);
+        using var semantic = zeros(1, 1, 2, 2);
+        using var presence = full([1, 1], -10f);
+        var outputs = new Dictionary<string, TorchSharp.torch.Tensor>
+        {
+            ["pred_boxes"] = boxes,
+            ["pred_logits"] = logits,
+            ["pred_masks"] = masks,
+            ["semantic_seg"] = semantic,
+            ["presence_logit_dec"] = presence,
+        };
+
+        using var result = Sam3ImageCommand.PostProcess(outputs, 8, 8);
+
+        Assert.Empty(result.Scores.data<float>().ToArray());
+    }
 }

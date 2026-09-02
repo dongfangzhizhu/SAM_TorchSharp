@@ -200,17 +200,24 @@ public class Sam3TransformerDecoderLayerNew : Module
         return attn_out;
     }
 
-    public Tensor forward(
+    public Tuple<Tensor, Tensor?> forward(
         Tensor query,           // [nq, bs, d_model] - seq-first
         Tensor query_pos,       // [nq, bs, d_model] - seq-first
         Tensor memory,          // [seq_hw, bs, d_model] - visual features (seq-first)
         Tensor text_memory,     // [seq_text, bs, d_model] - text features (seq-first)
         Tensor? text_attention_mask = null,
         Tensor? memory_pos = null,
-        Tensor? rpb_bias = null)  // [bs, nhead, nq, H*W] - box RPB bias for cross-attn
+        Tensor? rpb_bias = null,
+        Tensor? presence_token = null)  // [1, bs, d_model]
     {
         int N = (int)query.size(0);
         int B = (int)query.size(1);
+
+        if (presence_token is not null)
+        {
+            query = cat([presence_token, query], dim: 0);
+            query_pos = cat([zeros_like(presence_token), query_pos], dim: 0);
+        }
 
         Tensor addPos(Tensor t, Tensor pos) => pos is null ? t : t + 0.1 * pos;
 
@@ -279,7 +286,13 @@ public class Sam3TransformerDecoderLayerNew : Module
         query = query + mlp_out;
         query = layer_norm3.forward(query);
 
-        return query;
+        Tensor? nextPresence = null;
+        if (presence_token is not null)
+        {
+            nextPresence = query.narrow(0, 0, 1);
+            query = query.narrow(0, 1, query.size(0) - 1);
+        }
+        return Tuple.Create(query, nextPresence);
     }
 }
 
@@ -411,7 +424,7 @@ public class Sam3TransformerDecoderNew : Module
     /// Supports boxRPB="log" for RoPE position embedding bias.
     /// Returns (hidden_states [num_layers, nq, bs, d_model], reference_boxes [num_layers, nq, bs, 4]).
     /// </summary>
-    public Tuple<Tensor, Tensor> forward(
+    public Tuple<Tensor, Tensor, Tensor?> forward(
         Tensor tgt,
         Tensor memory,
         Tensor? text_memory = null,
@@ -429,6 +442,7 @@ public class Sam3TransformerDecoderNew : Module
 
         var hidden_states = new List<Tensor>();
         var reference_boxes_list = new List<Tensor>();
+        var presenceLogits = new List<Tensor>();
 
         var query = tgt.clone();
 
@@ -464,20 +478,28 @@ public class Sam3TransformerDecoderNew : Module
             */
 
             // 4. Run decoder layer
-            query = layers[i].forward(
+            var layerResult = layers[i].forward(
                 query,
                 query_pos,
                 memory,
                 text_memory ?? memory,
                 prompt_mask,
                 memory_pos,
-                rpb_bias);
+                rpb_bias,
+                presence_out);
+            query = layerResult.Item1;
+            presence_out = layerResult.Item2;
 
             hidden_states.Add(query.clone());
 
-            // 5. Predict presence logit from presence_out (if available)
-            // In Python, presence_out is returned by the decoder layer when presence_token is not null
-            // For now we skip per-layer presence prediction (not used in scoring)
+            // 5. Predict presence logit from the updated presence token.
+            if (presence_out is not null)
+            {
+                var normalizedPresence = presence_layer_norm.forward(presence_out);
+                var presenceLogit = presence_head.forward_box(normalizedPresence).squeeze(-1);
+                presenceLogit = clamp(presenceLogit, -10.0f, 10.0f);
+                presenceLogits.Add(presenceLogit);
+            }
 
             // 6. Predict box deltas and update reference points
             var normalizedQuery = output_layer_norm.forward(query);
@@ -493,7 +515,10 @@ public class Sam3TransformerDecoderNew : Module
         var hs_stack = torch.stack(hidden_states.ToArray());
         var ref_stack = torch.stack(reference_boxes_list.ToArray());
 
-        return Tuple.Create(hs_stack, ref_stack);
+        Tensor? stackedPresence = presenceLogits.Count == hidden_states.Count
+            ? torch.stack(presenceLogits.ToArray())
+            : null;
+        return Tuple.Create(hs_stack, ref_stack, stackedPresence);
     }
 
     /// <summary>
