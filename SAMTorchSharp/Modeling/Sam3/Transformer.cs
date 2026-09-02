@@ -74,6 +74,7 @@ public class Sam3TransformerEncoderLayer : Module
     private readonly int dim_feedforward;
     private readonly int head_dim;
     private readonly float attn_scale;
+    private const long AttentionQueryChunkSize = 256;
 
     public Sam3TransformerEncoderLayer(
         int d_model = 256,
@@ -126,20 +127,33 @@ public class Sam3TransformerEncoderLayer : Module
         var v_h = v.reshape(new long[] { memorySeq, B, nhead, head_dim }).permute(1, 2, 0, 3);
 
         var k_h_t = k_h.transpose(2, 3);
-        var attn = (q_h * attn_scale).matmul(k_h_t);
+        Tensor? maskBias = null;
         if (key_padding_mask is not null)
         {
             if (key_padding_mask.dim() != 2 || key_padding_mask.size(0) != B ||
                 key_padding_mask.size(1) != memorySeq)
                 throw new ArgumentException("Key padding mask must have shape [batch, memory sequence].");
-            var maskBias = key_padding_mask.to_type(attn.dtype).unsqueeze(1).unsqueeze(1) * -1.0e9f;
-            attn = attn + maskBias;
+            maskBias = key_padding_mask.to_type(q.dtype).unsqueeze(1).unsqueeze(1) * -1.0e9f;
         }
-        attn = functional.softmax(attn, dim: -1);
-        var attn_out = attn.matmul(v_h);
 
-        attn_out = attn_out.permute(2, 0, 1, 3).reshape(new long[] { querySeq, B, d_model });
-        return attn_out;
+        // The official image encoder uses large multi-scale sequences. Materializing
+        // [B, heads, query, memory] for 31,104 tokens requires tens of GiB on CPU.
+        // Query chunking preserves the attention result while bounding the largest
+        // temporary to [B, heads, AttentionQueryChunkSize, memory].
+        var outputChunks = new List<Tensor>();
+        for (long start = 0; start < querySeq; start += AttentionQueryChunkSize)
+        {
+            var length = Math.Min(AttentionQueryChunkSize, querySeq - start);
+            var queryChunk = q_h.narrow(2, start, length);
+            var attn = (queryChunk * attn_scale).matmul(k_h_t);
+            if (maskBias is not null)
+                attn = attn + maskBias.expand(B, nhead, length, memorySeq);
+            var chunkOutput = functional.softmax(attn, dim: -1).matmul(v_h);
+            outputChunks.Add(chunkOutput);
+        }
+
+        var attn_out = cat(outputChunks.ToArray(), dim: 2);
+        return attn_out.permute(2, 0, 1, 3).reshape(new long[] { querySeq, B, d_model });
     }
 
     public Dictionary<string, object> forward(

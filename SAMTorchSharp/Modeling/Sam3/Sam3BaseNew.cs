@@ -26,6 +26,9 @@ namespace SAMTorchSharp.Modeling.Sam3;
 /// </summary>
 public class Sam3BaseNew : Module
 {
+    private static readonly bool ForwardDiagnostics = string.Equals(
+        Environment.GetEnvironmentVariable("SAM3_FORWARD_DIAGNOSTICS"), "1", StringComparison.OrdinalIgnoreCase);
+
     public readonly Sam3ViTBackbone vision_backbone;
     public readonly Sam3ViTFpnNeck fpn_neck;
     public readonly Sam3TextEncoder text_encoder;
@@ -99,8 +102,10 @@ public class Sam3BaseNew : Module
 
     private Tuple<List<Tensor>, List<Tensor>> ForwardAllBackboneFeatures(Tensor images)
     {
+        TraceTensor("backbone.input", images);
         // 1. ViT backbone: [B, 3, H, W] -> [B, num_tokens, embed_dim]
         var vit_features = vision_backbone.forward(images);
+        TraceTensor("backbone.output", vit_features);
         var B = vit_features.size(0);
         var num_tokens = vit_features.size(1);
         var embed_dim = vit_features.size(2);
@@ -110,6 +115,7 @@ public class Sam3BaseNew : Module
         var vit_2d = vit_features.permute(new long[] { 0, 2, 1 }).reshape(new long[] { B, embed_dim, spatial_size, spatial_size });
         // 2. FPN neck: produce 4-scale features
         var allFpnFeatures = fpn_neck.forward(vit_2d);
+        TraceTensors("fpn.output", allFpnFeatures);
 
         // 3. Compute positional embeddings for each scale
         var allPosEmbeddings = new List<Tensor>();
@@ -118,6 +124,7 @@ public class Sam3BaseNew : Module
             var pos = position_encoding_2d(feat);
             allPosEmbeddings.Add(pos);
         }
+        TraceTensors("fpn.position", allPosEmbeddings);
 
         return Tuple.Create(allFpnFeatures, allPosEmbeddings);
     }
@@ -145,12 +152,16 @@ public class Sam3BaseNew : Module
             var (mask, memory, inputs) = text_encoder.ForwardText(captions);
             langFeat = memory; // [seq_len, batch, d_model]
             langMask = mask;    // [batch, seq_len]
+            TraceTensor("text.memory", langFeat);
+            TraceTensor("text.mask", langMask);
         }
 
         // 3. Encode geometric prompts
         Sam3Prompt gp = geometricPrompt ?? new Sam3Prompt();
         var (geoFeatsTensor, geoMaskTensor) = geometry_encoder.forward(gp, imgFeats,
             imgFeats.Select(f => new long[] { f.size(2), f.size(3) }).ToList());
+        TraceTensor("geometry.features", geoFeatsTensor);
+        TraceTensor("geometry.mask", geoMaskTensor);
 
         // 4. Combine text + geometry prompts
         Tensor prompt;
@@ -173,6 +184,8 @@ public class Sam3BaseNew : Module
             prompt = geoFeatsTensor;
             promptMask = geoMaskTensor;
         }
+        TraceTensor("prompt.features", prompt);
+        TraceTensor("prompt.mask", promptMask);
 
         // 5. Run transformer encoder
         var encoderMemory = transformer_encoder.forward(
@@ -184,6 +197,8 @@ public class Sam3BaseNew : Module
 
         var memTensor = (Tensor)encoderMemory["memory"];
         var posEmbed = (Tensor)encoderMemory["pos_embed"];
+        TraceTensor("transformer_encoder.memory", memTensor);
+        TraceTensor("transformer_encoder.position", posEmbed);
 
         // 6. Run transformer decoder (pass imgFeats for spatial shapes)
         var decoderResult = run_decoder(
@@ -193,6 +208,7 @@ public class Sam3BaseNew : Module
             null,
             prompt,
             promptMask);
+        TraceTensor("transformer_decoder.hidden", decoderResult.Item2);
 
         var resultDict = decoderResult.Item1;
         var hs = decoderResult.Item2;
@@ -202,9 +218,28 @@ public class Sam3BaseNew : Module
             var (maskLogits, semanticLogits) = mask_decoder.forward(hs, segmentationFeatures, memTensor, prompt, promptMask);
             resultDict["pred_masks"] = maskLogits;
             resultDict["semantic_seg"] = semanticLogits;
+            TraceTensor("mask_decoder.pred_masks", maskLogits);
+            TraceTensor("mask_decoder.semantic_seg", semanticLogits);
         }
 
         return resultDict;
+    }
+
+    private static void TraceTensors(string name, IReadOnlyList<Tensor> tensors)
+    {
+        if (!ForwardDiagnostics)
+            return;
+        for (var index = 0; index < tensors.Count; index++)
+            TraceTensor($"{name}[{index}]", tensors[index]);
+    }
+
+    private static void TraceTensor(string name, Tensor? tensor)
+    {
+        if (!ForwardDiagnostics || tensor is null)
+            return;
+        Console.Error.WriteLine(
+            $"[SAM3] {name}: shape=[{string.Join(",", tensor.shape)}], dtype={tensor.dtype}, " +
+            $"device={tensor.device}, contiguous={tensor.is_contiguous()}");
     }
 
     /// <summary>

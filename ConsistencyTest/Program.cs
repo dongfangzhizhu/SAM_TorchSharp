@@ -130,12 +130,22 @@ internal static class Program
         if (coverage < minCoverage)
             return Fail($"Checkpoint coverage {coverage:F2}% is below required {minCoverage:F2}%.", ValidationError);
 
+        var diagnostics = string.Equals(
+            Environment.GetEnvironmentVariable("SAM3_FORWARD_DIAGNOSTICS"), "1", StringComparison.OrdinalIgnoreCase);
         manual_seed(seed);
+        if (diagnostics)
+            Console.Error.WriteLine("[SAM3] input.create.begin");
         using var input = imagePath is null
             ? randn(new long[] { 1, 3, 1008, 1008 }, dtype: ScalarType.Float32, device: CPU)
             : Sam3ImageCommand.ToTensor(Sam3ImageCommand.LoadImage(imagePath));
+        if (diagnostics)
+            Console.Error.WriteLine($"[SAM3] input.create.end: shape=[{string.Join(",", input.shape)}], dtype={input.dtype}, device={input.device}");
         var stopwatch = Stopwatch.StartNew();
+        if (diagnostics)
+            Console.Error.WriteLine("[SAM3] model.forward.begin");
         var outputs = model.Forward(input, new[] { caption }, geometricPrompt);
+        if (diagnostics)
+            Console.Error.WriteLine("[SAM3] model.forward.end");
         stopwatch.Stop();
 
         try
