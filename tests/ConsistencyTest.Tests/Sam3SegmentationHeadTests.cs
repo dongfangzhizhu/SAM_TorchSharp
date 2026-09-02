@@ -24,6 +24,34 @@ public sealed class Sam3SegmentationHeadTests
     }
 
     [Fact]
+    public void GeometryLayerUsesSequenceFirstLayoutForBatchedCrossAttention()
+    {
+        manual_seed(37);
+        using var layer = new Sam3GeometryEncoderLayer(d_model: 8, num_heads: 2);
+        using var query = randn(3, 2, 8);
+        using var memory = randn(5, 2, 8);
+        using var memoryPos = randn(5, 2, 8);
+
+        var (output, _) = layer.forward(query, memory, memoryPos);
+        using (output)
+        {
+            Assert.Equal([3L, 2L, 8L], output.shape);
+            Assert.True(isfinite(output).all().item<bool>());
+        }
+    }
+
+    [Fact]
+    public void GeometryLayerRejectsMismatchedSequenceFirstBatchSizes()
+    {
+        using var layer = new Sam3GeometryEncoderLayer(d_model: 8, num_heads: 2);
+        using var query = zeros(3, 2, 8);
+        using var memory = zeros(5, 1, 8);
+
+        var exception = Assert.Throws<ArgumentException>(() => layer.forward(query, memory));
+        Assert.Contains("batch sizes must match", exception.Message);
+    }
+
+    [Fact]
     public void EmptyGeometryPromptUsesPersistentClsEmbedding()
     {
         manual_seed(31);

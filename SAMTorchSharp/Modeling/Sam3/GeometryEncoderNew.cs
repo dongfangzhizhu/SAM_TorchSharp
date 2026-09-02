@@ -61,37 +61,47 @@ public class Sam3GeometryEncoderLayer : Module
 
     private Tensor forward_self_attn(Tensor x)
     {
-        var B = x.size(0);
-        var N = x.size(1);
+        // SAM3 uses PyTorch's sequence-first convention: [sequence, batch, channels].
+        var N = x.size(0);
+        var B = x.size(1);
 
-        var q = self_attn_q_proj.forward(x).reshape(new long[] { B, N, num_heads, head_dim }).transpose(1, 2);
-        var k = self_attn_k_proj.forward(x).reshape(new long[] { B, N, num_heads, head_dim }).transpose(1, 2);
-        var v = self_attn_v_proj.forward(x).reshape(new long[] { B, N, num_heads, head_dim }).transpose(1, 2);
+        var q = self_attn_q_proj.forward(x).reshape(new long[] { N, B, num_heads, head_dim }).permute(1, 2, 0, 3);
+        var k = self_attn_k_proj.forward(x).reshape(new long[] { N, B, num_heads, head_dim }).permute(1, 2, 0, 3);
+        var v = self_attn_v_proj.forward(x).reshape(new long[] { N, B, num_heads, head_dim }).permute(1, 2, 0, 3);
 
         var attn = functional.scaled_dot_product_attention(q, k, v);
 
-        var attn_out = attn.transpose(1, 2).reshape(new long[] { B, N, d_model });
+        var attn_out = attn.permute(2, 0, 1, 3).reshape(new long[] { N, B, d_model });
         return self_attn_o_proj.forward(attn_out);
     }
 
-    private Tensor forward_cross_attn(Tensor query, Tensor memory)
+    private Tensor forward_cross_attn(Tensor query, Tensor memory, Tensor? memory_pos = null)
     {
-        var B = query.size(0);
-        var N = query.size(1);
+        var N = query.size(0);
+        var B = query.size(1);
         var M = memory.size(0);
+        if (memory.size(1) != B)
+            throw new ArgumentException("Query and memory batch sizes must match.", nameof(memory));
 
-        var q = cross_attn_q_proj.forward(query).reshape(new long[] { B, N, num_heads, head_dim }).transpose(1, 2);
-        var k = cross_attn_k_proj.forward(memory).reshape(new long[] { M, N, num_heads, head_dim }).transpose(0, 1);
-        var v = cross_attn_v_proj.forward(memory).reshape(new long[] { M, N, num_heads, head_dim }).transpose(0, 1);
+        var keyValue = memory_pos is null ? memory : memory + memory_pos;
+
+        var q = cross_attn_q_proj.forward(query).reshape(new long[] { N, B, num_heads, head_dim }).permute(1, 2, 0, 3);
+        var k = cross_attn_k_proj.forward(keyValue).reshape(new long[] { M, B, num_heads, head_dim }).permute(1, 2, 0, 3);
+        var v = cross_attn_v_proj.forward(memory).reshape(new long[] { M, B, num_heads, head_dim }).permute(1, 2, 0, 3);
 
         var attn = functional.scaled_dot_product_attention(q, k, v);
 
-        var attn_out = attn.transpose(1, 2).reshape(new long[] { B, N, d_model });
+        var attn_out = attn.permute(2, 0, 1, 3).reshape(new long[] { N, B, d_model });
         return cross_attn_o_proj.forward(attn_out);
     }
 
-    public Tuple<Tensor, Tensor> forward(Tensor query, Tensor memory)
+    public Tuple<Tensor, Tensor> forward(Tensor query, Tensor memory, Tensor? memory_pos = null)
     {
+        if (query.dim() != 3 || memory.dim() != 3)
+            throw new ArgumentException("Geometry attention expects [sequence, batch, channels] tensors.");
+        if (query.size(1) != memory.size(1))
+            throw new ArgumentException("Query and memory batch sizes must match.", nameof(memory));
+
         var q_normed = layer_norm1.forward(query);
         var self_attn_out = forward_self_attn(q_normed);
         query = query + self_attn_out;
