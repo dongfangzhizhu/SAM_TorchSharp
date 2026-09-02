@@ -125,6 +125,8 @@ public class Sam3GeometryEncoderNew : Module
     private readonly List<Sam3GeometryEncoderLayer> layers;
     private readonly Embedding label_embed;
     private readonly Embedding cls_embed;
+    private readonly Linear points_direct_project;
+    private readonly Linear boxes_direct_project;
     private readonly Linear final_proj;
     private readonly LayerNorm final_norm;
     private readonly LayerNorm encode_norm;
@@ -140,6 +142,8 @@ public class Sam3GeometryEncoderNew : Module
 
         label_embed = Embedding(2, d_model);
         cls_embed = Embedding(1, d_model);
+        points_direct_project = Linear(2, d_model);
+        boxes_direct_project = Linear(4, d_model);
         final_proj = Linear(d_model, d_model);
         final_norm = LayerNorm(d_model);
         encode_norm = LayerNorm(d_model);
@@ -172,38 +176,27 @@ public class Sam3GeometryEncoderNew : Module
 
         if (hasPoints)
         {
-            var points = geo_prompt.points; // [batch, num_points, 2]
-            var num_points = (int)points.size(1);
-            var h = (int)img_sizes[0][0];
-            var w = (int)img_sizes[0][1];
-
-            // Normalize points to [-1, 1] for grid_sample
-            var normW = (float)(w - 1);
-            var normH = (float)(h - 1);
-            var normFactor = tensor(new float[] { 1.0f / normW, 1.0f / normH }, device: device);
-            var coords = points * normFactor.unsqueeze(0) * 2.0f - 1.0f;
-            coords = coords.clamp(-1.0f, 1.0f);
-
-            // grid_sample expects [batch, out_h, out_w, 2]
-            var grid = coords.unsqueeze(2); // [batch, num_points, 1, 2]
-
-            var sampled = functional.grid_sample(
-                img_feats[0],
-                grid,
-                mode: GridSampleMode.Bilinear,
-                padding_mode: GridSamplePaddingMode.Zeros,
-                align_corners: false
-            );
-            // sampled: [batch, d_model, num_points, 1]
-            var result = sampled.squeeze(-1).permute(new long[] { 2, 0, 1 }); // [num_points, batch, d_model]
-            allFeats.Add(result);
-            allMasks.Add(zeros(new long[] { bs, num_points }, dtype: ScalarType.Bool, device: device));
+            var points = geo_prompt.points!; // [num_points, batch, 2]
+            RequirePromptShape(points, bs, 2, nameof(geo_prompt.points));
+            var labels = geo_prompt.point_labels ?? ones(new long[] { points.size(0), bs }, dtype: ScalarType.Int64, device: device);
+            RequireLabelShape(labels, points.size(0), bs, nameof(geo_prompt.point_labels));
+            var encoded = points_direct_project.forward(points) + label_embed.forward(labels.to_type(ScalarType.Int64));
+            allFeats.Add(encoded);
+            allMasks.Add(geo_prompt.point_mask ?? zeros(new long[] { bs, points.size(0) }, dtype: ScalarType.Bool, device: device));
         }
 
         if (hasBoxes)
         {
-            var boxes = geo_prompt.boxes; // [batch, num_boxes, 4]
-            var num_boxes = (int)boxes.size(1);
+            var boxes = geo_prompt.boxes!; // [num_boxes, batch, 4]
+            RequirePromptShape(boxes, bs, 4, nameof(geo_prompt.boxes));
+            var num_boxes = (int)boxes.size(0);
+            var labels = geo_prompt.box_labels ?? ones(new long[] { num_boxes, bs }, dtype: ScalarType.Int64, device: device);
+            RequireLabelShape(labels, num_boxes, bs, nameof(geo_prompt.box_labels));
+            var encoded = boxes_direct_project.forward(boxes) + label_embed.forward(labels.to_type(ScalarType.Int64));
+            allFeats.Add(encoded);
+            allMasks.Add(geo_prompt.box_mask ?? zeros(new long[] { bs, num_boxes }, dtype: ScalarType.Bool, device: device));
+            /* ROI pooling is intentionally handled by the geometry pooling sub-feature. */
+            /*
             var levelFeats = new List<Tensor>();
 
             for (int lvl = 0; lvl < Math.Min(4, img_feats.Count); lvl++)
@@ -261,6 +254,7 @@ public class Sam3GeometryEncoderNew : Module
             var totalSeqLen = (int)combinedBoxes.size(0);
             allFeats.Add(combinedBoxes);
             allMasks.Add(zeros(new long[] { bs, totalSeqLen }, dtype: ScalarType.Bool, device: device));
+            */
         }
 
         Tensor geoCombined;
@@ -316,6 +310,18 @@ public class Sam3GeometryEncoderNew : Module
         roi = roi.narrow(2, y1, y2 - y1);
         roi = roi.narrow(3, x1, x2 - x1);
         return roi;
+    }
+
+    private static void RequirePromptShape(Tensor prompt, long batchSize, long channels, string name)
+    {
+        if (prompt.dim() != 3 || prompt.size(1) != batchSize || prompt.size(2) != channels)
+            throw new ArgumentException($"{name} must have shape [sequence, batch, {channels}].", name);
+    }
+
+    private static void RequireLabelShape(Tensor labels, long sequenceLength, long batchSize, string name)
+    {
+        if (labels.dim() != 2 || labels.size(0) != sequenceLength || labels.size(1) != batchSize)
+            throw new ArgumentException($"{name} must have shape [sequence, batch].", name);
     }
 
     public long GetGeoSequenceLength(Sam3Prompt geo_prompt, List<Tensor> img_feats, List<long[]> img_sizes)

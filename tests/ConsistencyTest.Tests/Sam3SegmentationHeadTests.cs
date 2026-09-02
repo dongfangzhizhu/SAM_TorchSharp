@@ -69,6 +69,44 @@ public sealed class Sam3SegmentationHeadTests
     }
 
     [Fact]
+    public void GeometryEncoderUsesSequenceFirstPointAndBoxPrompts()
+    {
+        manual_seed(43);
+        using var encoder = new Sam3GeometryEncoderNew(d_model: 8, num_geo_layers: 0);
+        using var points = rand(2, 2, 2);
+        using var boxes = rand(1, 2, 4);
+        using var pointMask = zeros(2, 2, dtype: ScalarType.Bool);
+        using var boxMask = zeros(2, 1, dtype: ScalarType.Bool);
+        var prompt = new Sam3Prompt(
+            box_embeddings: boxes,
+            box_mask: boxMask,
+            point_embeddings: points,
+            point_mask: pointMask);
+        using var feature = randn(2, 8, 2, 2);
+
+        var (tokens, mask) = encoder.forward(prompt, [feature], [[2L, 2L]]);
+        using (tokens)
+        using (mask)
+        {
+            Assert.Equal([3L, 2L, 8L], tokens.shape);
+            Assert.Equal([2L, 3L], mask.shape);
+            Assert.True(isfinite(tokens).all().item<bool>());
+        }
+    }
+
+    [Fact]
+    public void GeometryEncoderRejectsBatchFirstPromptShape()
+    {
+        using var encoder = new Sam3GeometryEncoderNew(d_model: 8, num_geo_layers: 0);
+        using var points = zeros(2, 1, 2);
+        using var feature = zeros(2, 8, 2, 2);
+
+        var exception = Assert.Throws<ArgumentException>(() => encoder.forward(
+            new Sam3Prompt(point_embeddings: points), [feature], [[2L, 2L]]));
+        Assert.Contains("sequence, batch", exception.Message);
+    }
+
+    [Fact]
     public void EmptyGeometryPromptUsesPersistentClsEmbedding()
     {
         manual_seed(31);

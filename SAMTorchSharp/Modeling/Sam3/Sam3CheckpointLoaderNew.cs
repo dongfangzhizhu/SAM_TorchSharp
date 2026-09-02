@@ -248,8 +248,7 @@ public class Sam3CheckpointLoaderNew
         {
             var rest = ckptKey.Substring("geometry_encoder.".Length);
             // Skip geometry encoder modules not implemented in simplified C# version
-            if (rest.StartsWith("boxes_direct_project.") ||
-                rest.StartsWith("boxes_pool_project.") ||
+            if (rest.StartsWith("boxes_pool_project.") ||
                 rest.StartsWith("boxes_pos_enc_project.") ||
                 rest.StartsWith("output_layer_norm.") ||
                 rest.StartsWith("prompt_layer_norm.") ||
