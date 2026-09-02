@@ -127,6 +127,8 @@ public class Sam3GeometryEncoderNew : Module
     private readonly Embedding cls_embed;
     private readonly Linear points_direct_project;
     private readonly Linear boxes_direct_project;
+    private readonly Linear points_pos_enc_project;
+    private readonly Linear boxes_pos_enc_project;
     private readonly Linear final_proj;
     private readonly LayerNorm final_norm;
     private readonly LayerNorm encode_norm;
@@ -144,6 +146,8 @@ public class Sam3GeometryEncoderNew : Module
         cls_embed = Embedding(1, d_model);
         points_direct_project = Linear(2, d_model);
         boxes_direct_project = Linear(4, d_model);
+        points_pos_enc_project = Linear(d_model, d_model);
+        boxes_pos_enc_project = Linear(d_model + 2, d_model);
         final_proj = Linear(d_model, d_model);
         final_norm = LayerNorm(d_model);
         encode_norm = LayerNorm(d_model);
@@ -180,7 +184,14 @@ public class Sam3GeometryEncoderNew : Module
             RequirePromptShape(points, bs, 2, nameof(geo_prompt.points));
             var labels = geo_prompt.point_labels ?? ones(new long[] { points.size(0), bs }, dtype: ScalarType.Int64, device: device);
             RequireLabelShape(labels, points.size(0), bs, nameof(geo_prompt.point_labels));
-            var encoded = points_direct_project.forward(points) + label_embed.forward(labels.to_type(ScalarType.Int64));
+            var pointCount = points.size(0);
+            var (posX, posY) = position_encoding.EncodeXY(
+                points.select(-1, 0).flatten(), points.select(-1, 1).flatten());
+            var pos = cat(new[] { posY, posX }, dim: 1)
+                .reshape(new long[] { pointCount, bs, d_model });
+            var encoded = points_direct_project.forward(points)
+                + points_pos_enc_project.forward(pos)
+                + label_embed.forward(labels.to_type(ScalarType.Int64));
             allFeats.Add(encoded);
             allMasks.Add(geo_prompt.point_mask ?? zeros(new long[] { bs, points.size(0) }, dtype: ScalarType.Bool, device: device));
         }
@@ -192,7 +203,17 @@ public class Sam3GeometryEncoderNew : Module
             var num_boxes = (int)boxes.size(0);
             var labels = geo_prompt.box_labels ?? ones(new long[] { num_boxes, bs }, dtype: ScalarType.Int64, device: device);
             RequireLabelShape(labels, num_boxes, bs, nameof(geo_prompt.box_labels));
-            var encoded = boxes_direct_project.forward(boxes) + label_embed.forward(labels.to_type(ScalarType.Int64));
+            var (boxX, boxY) = position_encoding.EncodeXY(
+                boxes.select(-1, 0).flatten(), boxes.select(-1, 1).flatten());
+            var boxPos = cat(new[] {
+                boxY,
+                boxX,
+                boxes.select(-1, 3).flatten().unsqueeze(-1),
+                boxes.select(-1, 2).flatten().unsqueeze(-1)
+            }, dim: 1).reshape(new long[] { num_boxes, bs, d_model + 2 });
+            var encoded = boxes_direct_project.forward(boxes)
+                + boxes_pos_enc_project.forward(boxPos)
+                + label_embed.forward(labels.to_type(ScalarType.Int64));
             allFeats.Add(encoded);
             allMasks.Add(geo_prompt.box_mask ?? zeros(new long[] { bs, num_boxes }, dtype: ScalarType.Bool, device: device));
             /* ROI pooling is intentionally handled by the geometry pooling sub-feature. */

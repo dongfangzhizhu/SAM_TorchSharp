@@ -127,6 +127,25 @@ public sealed class Sam3SegmentationHeadTests
     }
 
     [Fact]
+    public void GeometryEncoderAddsPointAndBoxPositionalFeatures()
+    {
+        manual_seed(47);
+        using var encoder = new Sam3GeometryEncoderNew(d_model: 8, num_geo_layers: 0);
+        using var points = tensor(new float[,,] { { { 0.25f, 0.5f } } });
+        using var boxes = tensor(new float[,,] { { { 0.5f, 0.5f, 0.25f, 0.75f } } });
+        using var feature = randn(1, 8, 2, 2);
+        var prompt = new Sam3Prompt(point_embeddings: points, box_embeddings: boxes);
+
+        var (tokens, mask) = encoder.forward(prompt, [feature], [[2L, 2L]]);
+        using (tokens)
+        using (mask)
+        {
+            Assert.Equal([2L, 1L, 8L], tokens.shape);
+            Assert.True(isfinite(tokens).all().item<bool>());
+        }
+    }
+
+    [Fact]
     public void GeometryEncoderRejectsBatchFirstPromptShape()
     {
         using var encoder = new Sam3GeometryEncoderNew(d_model: 8, num_geo_layers: 0);

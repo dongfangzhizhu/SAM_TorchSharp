@@ -209,8 +209,8 @@ public class Sam3CheckpointLoaderBinary
         if (ckptKey.StartsWith("geometry_encoder."))
         {
             var rest = ckptKey.Substring("geometry_encoder.".Length);
-            if (rest.StartsWith("boxes_direct_project.") ||
-                rest.StartsWith("boxes_pool_project.") || rest.StartsWith("boxes_pos_enc_project.") ||
+            if (rest.StartsWith("boxes_pool_project.") ||
+                rest.StartsWith("boxes_pos_enc_project.") ||
                 rest.StartsWith("output_layer_norm.") || rest.StartsWith("prompt_layer_norm.") ||
                 rest.StartsWith("vision_layer_norm.")) return null;
             return MapGeometryEncoderKey(ckptKey);
