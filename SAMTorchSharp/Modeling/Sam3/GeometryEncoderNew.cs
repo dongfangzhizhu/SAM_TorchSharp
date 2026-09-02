@@ -147,7 +147,7 @@ public class Sam3GeometryEncoderNew : Module
         cls_embed = Embedding(1, d_model);
         points_pool_project = Linear(d_model, d_model);
         points_direct_project = Linear(2, d_model);
-        boxes_pool_project = Conv2d(d_model, d_model, kernelSize: 3);
+        boxes_pool_project = Conv2d(d_model, d_model, kernelSize: 7);
         points_pool_project = Linear(d_model, d_model);
         boxes_direct_project = Linear(4, d_model);
         boxes_pool_project = Conv2d(d_model, d_model, kernelSize: 3);
@@ -264,7 +264,7 @@ public class Sam3GeometryEncoderNew : Module
             var encoded = boxes_direct_project.forward(boxes)
                 + boxes_pos_enc_project.forward(boxPos)
                 + label_embed.forward(labels.to_type(ScalarType.Int64));
-            var pooledBoxes = RoiAlign(pooledImage, boxes, 3);
+            var pooledBoxes = RoiAlign(pooledImage, boxes, 7);
             var boxPool = boxes_pool_project.forward(pooledBoxes)
                 .view(bs, num_boxes, d_model).transpose(0, 1);
             encoded = encoded + boxPool;
