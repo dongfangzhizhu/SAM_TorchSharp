@@ -48,6 +48,8 @@ public class Sam3GeometryEncoderLayer : Module
         self_attn_v_proj = Linear(d_model, d_model);
         self_attn_o_proj = Linear(d_model, d_model);
 
+        cross_attn_q_proj = Linear(d_model, d_model);
+        cross_attn_k_proj = Linear(d_model, d_model);
         cross_attn_v_proj = Linear(d_model, d_model);
         cross_attn_o_proj = Linear(d_model, d_model);
 
