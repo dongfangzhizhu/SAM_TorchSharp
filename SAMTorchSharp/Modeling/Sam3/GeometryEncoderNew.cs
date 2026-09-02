@@ -216,66 +216,6 @@ public class Sam3GeometryEncoderNew : Module
                 + label_embed.forward(labels.to_type(ScalarType.Int64));
             allFeats.Add(encoded);
             allMasks.Add(geo_prompt.box_mask ?? zeros(new long[] { bs, num_boxes }, dtype: ScalarType.Bool, device: device));
-            /* ROI pooling is intentionally handled by the geometry pooling sub-feature. */
-            /*
-            var levelFeats = new List<Tensor>();
-
-            for (int lvl = 0; lvl < Math.Min(4, img_feats.Count); lvl++)
-            {
-                var h = (int)img_sizes[lvl][0];
-                var w = (int)img_sizes[lvl][1];
-
-                // Scale boxes to feature map pixel coords
-                var scaleTensor = tensor(new float[] { (float)w, (float)h, (float)w, (float)h }, device: boxes.device);
-                var scaledBoxes = boxes * scaleTensor; // [batch, num_boxes, 4]
-
-                // Use adaptive_avg_pool2d per box region
-                var B = (int)scaledBoxes.size(0);
-                var NB = (int)scaledBoxes.size(1);
-                var C = (int)img_feats[lvl].size(1);
-                var FH = (int)img_feats[lvl].size(2);
-                var FW = (int)img_feats[lvl].size(3);
-
-                var boxList = new List<Tensor>();
-                for (int b = 0; b < B; b++)
-                {
-                    for (int nb = 0; nb < NB; nb++)
-                    {
-                        float x1f = scaledBoxes[b, nb, 0].item<float>();
-                        float y1f = scaledBoxes[b, nb, 1].item<float>();
-                        float x2f = scaledBoxes[b, nb, 2].item<float>();
-                        float y2f = scaledBoxes[b, nb, 3].item<float>();
-
-                        int x1 = Math.Max(0, Math.Min((int)Math.Round(x1f), FW - 1));
-                        int y1 = Math.Max(0, Math.Min((int)Math.Round(y1f), FH - 1));
-                        int x2 = Math.Max(x1 + 1, Math.Min((int)Math.Round(x2f), FW));
-                        int y2 = Math.Max(y1 + 1, Math.Min((int)Math.Round(y2f), FH));
-
-                        var roi = extractROI(img_feats[lvl], b, x1, y1, x2, y2);
-                        if (roi.size(2) > 0 && roi.size(3) > 0)
-                        {
-                            var pooledFeat = functional.adaptive_avg_pool2d(roi, new long[] { 7, 7 });
-                            boxList.Add(pooledFeat);
-                        }
-                        else
-                        {
-                            boxList.Add(zeros(new long[] { 1, C, 7, 7 }, device: device));
-                        }
-                    }
-                }
-
-                var stacked = stack(boxList.ToArray(), dim: 0); // [B*NB, C, 7, 7]
-                var reshaped = stacked.reshape(new long[] { B, NB, C, 7, 7 }); // [B, NB, C, 7, 7]
-                var boxMean = reshaped.mean(new long[] { 3, 4 }); // [B, NB, C]
-                var seqFormat = boxMean.permute(new long[] { 1, 0, 2 }); // [NB, B, C]
-                levelFeats.Add(seqFormat);
-            }
-
-            var combinedBoxes = levelFeats.Count == 1 ? levelFeats[0] : cat(levelFeats.ToArray(), dim: 0);
-            var totalSeqLen = (int)combinedBoxes.size(0);
-            allFeats.Add(combinedBoxes);
-            allMasks.Add(zeros(new long[] { bs, totalSeqLen }, dtype: ScalarType.Bool, device: device));
-            */
         }
 
         Tensor geoCombined;
@@ -320,17 +260,6 @@ public class Sam3GeometryEncoderNew : Module
         var clsToken = cls_embed.weight.view(1, 1, d_model).repeat(1, batchSize, 1).to(device);
         var clsMask = zeros(new long[] { batchSize, 1 }, dtype: ScalarType.Bool, device: device);
         return Tuple.Create(clsToken, clsMask);
-    }
-
-    /// <summary>
-    /// Extract ROI from feature map using narrow (C# equivalent of slicing).
-    /// </summary>
-    private Tensor extractROI(Tensor feat, int batchIdx, int x1, int y1, int x2, int y2)
-    {
-        var roi = feat.narrow(0, batchIdx, 1);
-        roi = roi.narrow(2, y1, y2 - y1);
-        roi = roi.narrow(3, x1, x2 - x1);
-        return roi;
     }
 
     private static void RequirePromptShape(Tensor prompt, long batchSize, long channels, string name)
