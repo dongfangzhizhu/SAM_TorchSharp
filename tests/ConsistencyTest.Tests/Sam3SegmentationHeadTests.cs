@@ -52,6 +52,23 @@ public sealed class Sam3SegmentationHeadTests
     }
 
     [Fact]
+    public void GeometryEncoderRunsPostProjectionAndTransformerStack()
+    {
+        manual_seed(41);
+        using var encoder = new Sam3GeometryEncoderNew(d_model: 8, num_geo_layers: 1);
+        using var feature = randn(2, 8, 2, 3);
+        var (tokens, mask) = encoder.forward(new Sam3Prompt(), [feature], [[2L, 3L]]);
+        using (tokens)
+        using (mask)
+        {
+            Assert.Equal([1L, 2L, 8L], tokens.shape);
+            Assert.Equal([2L, 1L], mask.shape);
+            Assert.True(isfinite(tokens).all().item<bool>());
+            Assert.False(mask.any().item<bool>());
+        }
+    }
+
+    [Fact]
     public void EmptyGeometryPromptUsesPersistentClsEmbedding()
     {
         manual_seed(31);

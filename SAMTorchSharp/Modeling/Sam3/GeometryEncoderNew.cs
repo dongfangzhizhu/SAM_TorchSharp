@@ -110,7 +110,7 @@ public class Sam3GeometryEncoderLayer : Module
         var cross_attn_out = forward_cross_attn(ca_normed, memory);
         query = query + cross_attn_out;
 
-        var mlp_out = mlp_fc2.forward(functional.gelu(mlp_fc1.forward(layer_norm3.forward(query))));
+        var mlp_out = mlp_fc2.forward(functional.relu(mlp_fc1.forward(layer_norm3.forward(query))));
         query = query + mlp_out;
 
         return Tuple.Create<Tensor, Tensor>(query, null);
@@ -126,6 +126,9 @@ public class Sam3GeometryEncoderNew : Module
     private readonly Embedding label_embed;
     private readonly Embedding cls_embed;
     private readonly Linear final_proj;
+    private readonly LayerNorm final_norm;
+    private readonly LayerNorm encode_norm;
+    private readonly Sam3PositionEmbeddingSine position_encoding;
     private readonly int d_model;
     private readonly int num_geo_layers;
 
@@ -138,6 +141,9 @@ public class Sam3GeometryEncoderNew : Module
         label_embed = Embedding(2, d_model);
         cls_embed = Embedding(1, d_model);
         final_proj = Linear(d_model, d_model);
+        final_norm = LayerNorm(d_model);
+        encode_norm = LayerNorm(d_model);
+        position_encoding = new Sam3PositionEmbeddingSine(num_pos_feats: d_model, normalize: true);
 
         layers = new List<Sam3GeometryEncoderLayer>();
         for (int i = 0; i < num_geo_layers; i++)
@@ -160,9 +166,6 @@ public class Sam3GeometryEncoderNew : Module
         bool hasPoints = geo_prompt.points is not null && geo_prompt.points.numel() > 0;
         bool hasBoxes = geo_prompt.boxes is not null && geo_prompt.boxes.numel() > 0;
         bool hasMasks = geo_prompt.masks is not null && geo_prompt.masks.numel() > 0;
-
-        if (!hasPoints && !hasBoxes && !hasMasks)
-            return EncodeEmptyPrompt(bs, device);
 
         var allFeats = new List<Tensor>();
         var allMasks = new List<Tensor>();
@@ -261,7 +264,11 @@ public class Sam3GeometryEncoderNew : Module
         }
 
         Tensor geoCombined;
-        if (allFeats.Count == 1)
+        if (allFeats.Count == 0)
+        {
+            geoCombined = cls_embed.weight.view(1, 1, d_model).repeat(1, bs, 1).to(device);
+        }
+        else if (allFeats.Count == 1)
         {
             geoCombined = allFeats[0];
         }
@@ -272,6 +279,22 @@ public class Sam3GeometryEncoderNew : Module
 
         var finalSeqLen = geoCombined.size(0);
         var geoMask = zeros(new long[] { bs, finalSeqLen }, dtype: ScalarType.Bool, device: device);
+
+        // Match SequenceGeometryEncoder: post projection/norm followed by the
+        // pre-norm self/cross-attention encoder stack and final norm.
+        geoCombined = final_norm.forward(final_proj.forward(geoCombined));
+        if (layers.Count > 0)
+        {
+            var image = img_feats[^1];
+            var imagePos = position_encoding.forward(image)
+                .flatten(2).transpose(1, 2).transpose(0, 1);
+            var imageMemory = image.flatten(2).transpose(1, 2).transpose(0, 1);
+            foreach (var layer in layers)
+            {
+                geoCombined = layer.forward(geoCombined, imageMemory, imagePos).Item1;
+            }
+            geoCombined = encode_norm.forward(geoCombined);
+        }
 
         return Tuple.Create(geoCombined, geoMask);
     }
