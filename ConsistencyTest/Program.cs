@@ -79,6 +79,9 @@ internal static class Program
     {
         var checkpointPath = options.RequirePath("checkpoint");
         var imagePath = options.GetOptionalPath("image");
+        var pointsPath = options.GetOptionalPath("points");
+        var labelsPath = options.GetOptionalPath("labels");
+        var boxPath = options.GetOptionalPath("box");
         var outputDirectory = Path.GetFullPath(options.Get("output") ?? Path.Combine(Environment.CurrentDirectory, "sam3-output"));
         var caption = options.Get("caption") ?? "a dog";
         var deviceName = (options.Get("device") ?? "cpu").ToLowerInvariant();
@@ -90,6 +93,8 @@ internal static class Program
             throw new CliException("Only --device cpu is supported by the configured libtorch-cpu-win-x64 runtime.");
 
         var checkpointFormat = GetSam3CheckpointFormat(checkpointPath);
+        var geometryInputs = Sam3ImageCommand.LoadGeometryInputs(pointsPath, labelsPath, boxPath);
+        var geometricPrompt = Sam3ImageCommand.CreateGeometryPrompt(geometryInputs);
 
         Directory.CreateDirectory(outputDirectory);
         Console.WriteLine("Building SAM3 detector model...");
@@ -126,7 +131,7 @@ internal static class Program
             ? randn(new long[] { 1, 3, 1008, 1008 }, dtype: ScalarType.Float32, device: CPU)
             : Sam3ImageCommand.ToTensor(Sam3ImageCommand.LoadImage(imagePath));
         var stopwatch = Stopwatch.StartNew();
-        var outputs = model.Forward(input, new[] { caption }, geometricPrompt: null);
+        var outputs = model.Forward(input, new[] { caption }, geometricPrompt);
         stopwatch.Stop();
 
         try
@@ -146,6 +151,8 @@ internal static class Program
                 input = imagePath is null ? "seeded-random" : "preprocessed-image",
                 device = deviceName,
                 caption,
+                pointCount = geometryInputs.Points?.Shape[0] ?? 0,
+                hasBox = geometryInputs.Box is not null,
                 seed,
                 loaded,
                 skipped,
@@ -162,6 +169,9 @@ internal static class Program
         {
             foreach (var tensor in outputs.Values)
                 tensor.Dispose();
+            geometricPrompt.point_embeddings?.Dispose();
+            geometricPrompt.point_labels?.Dispose();
+            geometricPrompt.box_embeddings?.Dispose();
         }
 
         Console.WriteLine($"Inference completed in {stopwatch.ElapsedMilliseconds} ms.");
@@ -382,6 +392,9 @@ internal static class Program
 
             sam3-run options:
               --image <file.npy>          Optional normalized float32 [1,3,1008,1008] image
+              --points <file.npy>         Optional float32 [N,2] model-input pixel (x,y) coordinates
+              --labels <file.npy>         Required with --points: float32 [N], values 0 or 1
+              --box <file.npy>            Optional float32 [4] model-input pixel x0,y0,x1,y1 box
               --output <directory>       Output directory (default: ./sam3-output)
               --caption <text>           Text prompt (default: "a dog")
               --device cpu               Execution device; CPU is currently the only supported runtime

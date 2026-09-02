@@ -3,8 +3,11 @@ using static TorchSharp.torch;
 
 namespace ConsistencyTest;
 
+internal sealed record Sam3GeometryInputs(NpyArray? Points, NpyArray? Labels, NpyArray? Box);
+
 internal static class Sam3ImageCommand
 {
+    private const int InputSize = 1008;
     private static readonly IReadOnlyDictionary<string, int> RequiredOutputRanks = new Dictionary<string, int>
     {
         ["pred_boxes"] = 3,
@@ -31,6 +34,78 @@ internal static class Sam3ImageCommand
     public static Tensor ToTensor(NpyArray image) =>
         tensor(image.Values, dtype: ScalarType.Float32, device: CPU).reshape(1, 3, 1008, 1008);
 
+    public static Sam3GeometryInputs LoadGeometryInputs(
+        string? pointsPath,
+        string? labelsPath,
+        string? boxPath)
+    {
+        var inputs = new Sam3GeometryInputs(
+            pointsPath is null ? null : NpyFile.ReadFloat32(pointsPath),
+            labelsPath is null ? null : NpyFile.ReadFloat32(labelsPath),
+            boxPath is null ? null : NpyFile.ReadFloat32(boxPath));
+        ValidateGeometryInputs(inputs);
+        return inputs;
+    }
+
+    public static void ValidateGeometryInputs(Sam3GeometryInputs inputs)
+    {
+        ArgumentNullException.ThrowIfNull(inputs);
+        if ((inputs.Points is null) != (inputs.Labels is null))
+            throw new CliException("--points and --labels must be supplied together.");
+
+        if (inputs.Points is not null)
+        {
+            if (inputs.Points.Shape.Length != 2 || inputs.Points.Shape[0] <= 0 || inputs.Points.Shape[1] != 2)
+                throw new CliException("--points must have shape [N,2].");
+            if (inputs.Labels!.Shape.Length != 1 || inputs.Labels.Shape[0] != inputs.Points.Shape[0])
+                throw new CliException("--labels must have shape [N] matching --points.");
+            if (inputs.Labels.Values.Any(value => value is not 0f and not 1f))
+                throw new CliException("--labels values must be 0 (negative) or 1 (positive).");
+            ValidateCoordinates(inputs.Points.Values, "--points");
+        }
+
+        if (inputs.Box is not null)
+        {
+            if (!inputs.Box.Shape.SequenceEqual([4]))
+                throw new CliException("--box must have shape [4] in x0,y0,x1,y1 order.");
+            ValidateCoordinates(inputs.Box.Values, "--box");
+            if (inputs.Box.Values[0] > inputs.Box.Values[2] || inputs.Box.Values[1] > inputs.Box.Values[3])
+                throw new CliException("--box must satisfy x0 <= x1 and y0 <= y1.");
+        }
+    }
+
+    public static SAMTorchSharp.Modeling.Sam3.Sam3Prompt CreateGeometryPrompt(Sam3GeometryInputs inputs)
+    {
+        ValidateGeometryInputs(inputs);
+        Tensor? points = null;
+        Tensor? labels = null;
+        Tensor? boxes = null;
+
+        if (inputs.Points is not null)
+        {
+            points = tensor(inputs.Points.Values, dtype: ScalarType.Float32, device: CPU)
+                .reshape(inputs.Points.Shape[0], 1, 2) / InputSize;
+            labels = tensor(inputs.Labels!.Values, dtype: ScalarType.Float32, device: CPU)
+                .to_type(ScalarType.Int64).reshape(inputs.Labels.Shape[0], 1);
+        }
+
+        if (inputs.Box is not null)
+        {
+            var values = inputs.Box.Values;
+            var cx = (values[0] + values[2]) / (2 * InputSize);
+            var cy = (values[1] + values[3]) / (2 * InputSize);
+            var width = (values[2] - values[0]) / InputSize;
+            var height = (values[3] - values[1]) / InputSize;
+            boxes = tensor(new[] { cx, cy, width, height }, dtype: ScalarType.Float32, device: CPU)
+                .reshape(1, 1, 4);
+        }
+
+        return new SAMTorchSharp.Modeling.Sam3.Sam3Prompt(
+            box_embeddings: boxes,
+            point_embeddings: points,
+            point_labels: labels);
+    }
+
     public static void ValidateOutputs(IReadOnlyDictionary<string, Tensor> outputs)
     {
         ArgumentNullException.ThrowIfNull(outputs);
@@ -52,5 +127,14 @@ internal static class Sam3ImageCommand
             outputs["pred_logits"].size(1) != queryCount ||
             outputs["semantic_seg"].shape is not [1, 1, _, _])
             throw new InvalidOperationException("SAM 3 output shapes or query counts do not match the inference contract.");
+    }
+
+    private static void ValidateCoordinates(float[] values, string option)
+    {
+        for (var index = 0; index < values.Length; index++)
+        {
+            if (!float.IsFinite(values[index]) || values[index] < 0 || values[index] > InputSize)
+                throw new CliException($"{option} coordinates must be finite and within the 1008x1008 model input.");
+        }
     }
 }

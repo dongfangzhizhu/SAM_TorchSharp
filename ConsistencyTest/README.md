@@ -56,6 +56,9 @@ dotnet run --project .\ConsistencyTest.csproj -- sam2-image `
   --image .\image.npy `
   --points .\points.npy `
   --labels .\labels.npy `
+  --box .\box.npy `
+  --points .\points.npy `
+  --labels .\labels.npy `
   --output .\sam2-image-output `
   --multimask true
 ```
@@ -120,6 +123,9 @@ dotnet run --project .\ConsistencyTest.csproj -- sam3-run `
 array with shape `[1,3,1008,1008]`, resized and normalized with ImageNet mean
 `[0.485,0.456,0.406]` and standard deviation `[0.229,0.224,0.225]`. When omitted, the command uses
 the seeded random diagnostic input. For official `.safetensors` checkpoints the command always
+accepts optional point and box geometry prompts in model-input pixels. `points.npy` has shape `[N,2]`,
+`labels.npy` has shape `[N]` with `0` for negative and `1` for positive points, and `box.npy` has
+shape `[4]` in `x0,y0,x1,y1` order. Coordinates must lie within the `1008x1008` model input. The command
 writes `checkpoint-report.json` before coverage validation or inference. The report contains the
 loaded, missing, skipped, and shape-mismatched keys plus the loadable-tensor coverage. Successful
 inference also writes normalized `pred_boxes.npy` and `pred_logits.npy`. The underlying model
