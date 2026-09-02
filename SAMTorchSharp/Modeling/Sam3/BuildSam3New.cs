@@ -36,7 +36,9 @@ public class BuildSam3New
     private int textNumHeads = 16;
     private int contextLength = 32;
     private int vocabSize = 49408;
-    private int numFeatureLevels = 3;
+    // The official SAM3 image detector encoder consumes only the highest-resolution
+    // FPN level. The mask decoder still receives all four levels.
+    private int numFeatureLevels = 1;
     private int numQueries = 200;
     private int decoderLayers = 6;
     private int encoderLayers = 6;

@@ -140,8 +140,8 @@ public class Sam3BaseNew : Module
     {
         // 1. Run vision backbone
         var (segmentationFeatures, allPosEmbeds) = ForwardAllBackboneFeatures(images);
-        var imgFeats = segmentationFeatures.Take(num_feature_levels).ToList();
-        var imgPosEmbeds = allPosEmbeds.Take(num_feature_levels).ToList();
+        var imgFeats = segmentationFeatures.Skip(segmentationFeatures.Count - num_feature_levels).ToList();
+        var imgPosEmbeds = allPosEmbeds.Skip(allPosEmbeds.Count - num_feature_levels).ToList();
 
         // 2. Get text features
         Tensor? langFeat = null;
@@ -253,8 +253,8 @@ public class Sam3BaseNew : Module
     {
         var gp = geometricPrompt ?? new Sam3Prompt();
 
-        var detectorFeatures = imgFeats.Take(num_feature_levels).ToList();
-        var detectorPositions = imgPosEmbeds.Take(num_feature_levels).ToList();
+        var detectorFeatures = imgFeats.Skip(imgFeats.Count - num_feature_levels).ToList();
+        var detectorPositions = imgPosEmbeds.Skip(imgPosEmbeds.Count - num_feature_levels).ToList();
 
         // 1. Encode geometric prompts
         var (geoFeatsTensor, geoMaskTensor) = geometry_encoder.forward(gp, detectorFeatures,
