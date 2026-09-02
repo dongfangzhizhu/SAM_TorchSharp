@@ -154,6 +154,7 @@ public class Sam3GeometryEncoderNew : Module
         final_proj = Linear(d_model, d_model);
         final_norm = LayerNorm(d_model);
         encode_norm = LayerNorm(d_model);
+        vision_layer_norm = LayerNorm(d_model);
         position_encoding = new Sam3PositionEmbeddingSine(num_pos_feats: d_model, normalize: true);
 
         layers = new List<Sam3GeometryEncoderLayer>();
