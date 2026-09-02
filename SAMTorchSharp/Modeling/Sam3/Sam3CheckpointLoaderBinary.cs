@@ -222,8 +222,13 @@ public class Sam3CheckpointLoaderBinary
 
     private string MapPtHfKey(string ckptKey)
     {
-        if (!ckptKey.StartsWith("detector.")) return null;
-        var rest = ckptKey.Substring("detector.".Length);
+        string rest;
+        if (ckptKey.StartsWith("detector_model."))
+            rest = ckptKey.Substring("detector_model.".Length);
+        else if (ckptKey.StartsWith("detector."))
+            rest = ckptKey.Substring("detector.".Length);
+        else
+            return null;
         if (rest.StartsWith("tracker.") || rest.StartsWith("sam2_predictor.")) return null;
 
         if (rest.StartsWith("backbone.vision_backbone.convs."))
@@ -384,10 +389,7 @@ public class Sam3CheckpointLoaderBinary
         if (rest.StartsWith("geometry_encoder."))
         {
             var geoRest = rest.Substring("geometry_encoder.".Length);
-            if (geoRest.StartsWith("boxes_direct_project.") ||
-                geoRest.StartsWith("boxes_pool_project.") || geoRest.StartsWith("boxes_pos_enc_project.") ||
-                geoRest.StartsWith("points_direct_project.") || geoRest.StartsWith("points_pool_project.") ||
-                geoRest.StartsWith("points_pos_enc_project.") || geoRest.StartsWith("encode_norm.") ||
+            if (geoRest.StartsWith("boxes_pool_project.") || geoRest.StartsWith("points_pool_project.") ||
                 geoRest.StartsWith("img_pre_norm.") || geoRest.StartsWith("norm.")) return null;
             geoRest = geoRest.Replace("encode.", "layers.")
                 .Replace("cross_attn_image", "cross_attn")
